@@ -78,4 +78,4 @@ MIT © Wisp
 
 ---
 
-*Built on [Stellar](https://stellar.org) · Not officially affiliated with the Stellar Development Foundation*
+*Built on [Stellar](https://stellar.org)
