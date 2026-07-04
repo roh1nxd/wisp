@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WISP — Describe it. Soroban builds it.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#101010;
+    --paper:#FAF9F4;
+    --cobalt:#3355FF;
+    --acid:#E8FF3D;
+    --coral:#FF4F32;
+    --violet:#7B3FFF;
+    --border-w: 3px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Inter', sans-serif;
+    line-height:1.5;
+    overflow-x:hidden;
+  }
+  h1,h2,h3{
+    font-family:'Space Grotesk', sans-serif;
+    line-height:1.05;
+    letter-spacing:-0.01em;
+  }
+  .mono{font-family:'IBM Plex Mono', monospace;}
+  a{color:inherit; text-decoration:none;}
+  .wrap{max-width:1180px; margin:0 auto; padding:0 28px;}
+
+  /* ---- shared brutalist utilities ---- */
+  .box{
+    border: var(--border-w) solid var(--ink);
+    box-shadow: 8px 8px 0 var(--ink);
+    background: var(--paper);
+  }
+  .btn{
+    display:inline-flex; align-items:center; gap:10px;
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:700;
+    font-size:16px;
+    padding:14px 26px;
+    border:var(--border-w) solid var(--ink);
+    box-shadow:6px 6px 0 var(--ink);
+    background:var(--acid);
+    cursor:pointer;
+    transition:transform .12s ease, box-shadow .12s ease;
+  }
+  .btn:hover{ transform:translate(3px,3px); box-shadow:3px 3px 0 var(--ink); }
+  .btn:active{ transform:translate(6px,6px); box-shadow:0 0 0 var(--ink); }
+  .btn.ghost{ background:var(--paper); }
+  .btn.dark{ background:var(--ink); color:var(--paper); }
+  .tag{
+    display:inline-block;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+    padding:5px 10px;
+    border:2px solid var(--ink);
+    background:var(--paper);
+  }
+
+  /* ---- nav ---- */
+  nav{
+    position:sticky; top:0; z-index:50;
+    background:var(--paper);
+    border-bottom:var(--border-w) solid var(--ink);
+  }
+  nav .row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 0;
+  }
+  .logo{
+    display:flex; align-items:center; gap:10px;
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:700;
+    font-size:22px;
+  }
+  .logo .star{
+    width:22px; height:22px;
+    background:var(--cobalt);
+    clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+    display:inline-block;
+  }
+  .navlinks{ display:flex; gap:32px; font-weight:600; font-size:15px; }
+  .navlinks a{ border-bottom:2px solid transparent; padding-bottom:2px; }
+  .navlinks a:hover{ border-color:var(--ink); }
+  @media (max-width:720px){ .navlinks{display:none;} }
+
+  /* ---- hero ---- */
+  .hero{ padding:76px 0 60px; position:relative; }
+  .hero-grid{
+    display:grid; grid-template-columns:1.1fr .9fr; gap:56px; align-items:center;
+  }
+  @media (max-width:900px){ .hero-grid{ grid-template-columns:1fr; } }
+  .eyebrow{
+    display:inline-flex; align-items:center; gap:8px;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.1em;
+    background:var(--violet); color:#fff;
+    padding:6px 12px; border:2px solid var(--ink);
+    margin-bottom:22px;
+  }
+  .hero h1{
+    font-size:clamp(40px, 6vw, 72px);
+    font-weight:700;
+  }
+  .hero h1 .hl{
+    background:var(--cobalt); color:#fff; padding:0 10px;
+    display:inline-block;
+  }
+  .hero p.lede{
+    margin-top:22px; font-size:19px; max-width:520px; color:#333;
+  }
+  .hero-cta{ display:flex; gap:16px; margin-top:34px; flex-wrap:wrap; }
+
+  /* terminal mock */
+  .terminal{
+    background:var(--ink); color:#F2F2F2;
+    padding:0;
+    overflow:hidden;
+  }
+  .term-bar{
+    display:flex; align-items:center; gap:8px;
+    background:#000; padding:10px 14px;
+    border-bottom:2px solid #333;
+  }
+  .term-bar span{
+    width:12px; height:12px; border:2px solid #F2F2F2;
+    display:inline-block;
+  }
+  .term-bar .fname{
+    margin-left:auto; font-family:'IBM Plex Mono'; font-size:12px; color:#999;
+  }
+  .term-body{ padding:22px; font-family:'IBM Plex Mono', monospace; font-size:14px; min-height:230px;}
+  .term-line{ margin-bottom:14px; }
+  .prompt-sym{ color:var(--acid); }
+  .type-cursor::after{
+    content:'▌'; animation:blink 1s steps(1) infinite; color:var(--acid);
+  }
+  @keyframes blink{ 50%{opacity:0;} }
+  .term-out{ color:#9FE870; }
+  .term-muted{ color:#888; }
+
+  /* ---- ticker ---- */
+  .ticker-wrap{
+    background:var(--ink); color:var(--paper);
+    border-top:var(--border-w) solid var(--ink); border-bottom:var(--border-w) solid var(--ink);
+    overflow:hidden; padding:14px 0;
+  }
+  .ticker{
+    display:flex; gap:48px; white-space:nowrap;
+    animation:scroll 24s linear infinite;
+    font-family:'IBM Plex Mono', monospace; font-weight:600; font-size:14px; letter-spacing:.05em;
+  }
+  .ticker span::after{ content:'✦'; margin-left:48px; color:var(--acid); }
+  @keyframes scroll{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
+  @media (prefers-reduced-motion: reduce){ .ticker{animation:none;} .type-cursor::after{animation:none;} }
+
+  /* ---- sections ---- */
+  section{ padding:80px 0; }
+  .section-head{ max-width:640px; margin-bottom:48px; }
+  .section-head .tag{ margin-bottom:16px; }
+  .section-head h2{ font-size:clamp(30px,4vw,44px); }
+  .section-head p{ margin-top:14px; font-size:17px; color:#333; }
+
+  /* steps */
+  .steps{ display:grid; grid-template-columns:repeat(3,1fr); gap:24px; }
+  @media (max-width:860px){ .steps{ grid-template-columns:1fr; } }
+  .step{ padding:28px; background:var(--paper); position:relative; }
+  .step .num{
+    font-family:'Space Grotesk'; font-weight:700; font-size:48px;
+    color:var(--paper); -webkit-text-stroke: 2px var(--ink);
+    margin-bottom:14px; display:block;
+  }
+  .step h3{ font-size:21px; margin-bottom:10px; }
+  .step p{ font-size:15px; color:#333; }
+  .step:nth-child(1){ background:var(--acid); }
+  .step:nth-child(2){ background:#fff; }
+  .step:nth-child(3){ background:var(--coral); color:#fff; }
+  .step:nth-child(3) .num{ -webkit-text-stroke: 2px #fff; color:var(--coral); }
+  .step:nth-child(3) p{ color:#fff0ec; }
+
+  /* templates */
+  .tpl-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:22px; }
+  @media (max-width:900px){ .tpl-grid{ grid-template-columns:repeat(2,1fr); } }
+  @media (max-width:600px){ .tpl-grid{ grid-template-columns:1fr; } }
+  .tpl-card{
+    padding:22px; background:#fff; cursor:default;
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .tpl-card:hover{ transform:translate(-3px,-3px); box-shadow:11px 11px 0 var(--ink); }
+  .tpl-card .icon{
+    width:40px; height:40px; border:2px solid var(--ink);
+    display:flex; align-items:center; justify-content:center;
+    font-family:'IBM Plex Mono'; font-weight:700; margin-bottom:16px;
+    background:var(--cobalt); color:#fff;
+  }
+  .tpl-card h3{ font-size:18px; margin-bottom:8px; }
+  .tpl-card p{ font-size:14px; color:#444; }
+  .tpl-card .audited{ margin-top:14px; font-size:12px; }
+
+  /* guardrails */
+  .guard-wrap{ background:var(--ink); color:var(--paper); }
+  .guard-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:2px; margin-top:40px; background:#333;}
+  @media (max-width:720px){ .guard-grid{ grid-template-columns:1fr; } }
+  .guard-item{ background:var(--ink); padding:28px; }
+  .guard-item .k{ font-family:'IBM Plex Mono'; color:var(--acid); font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
+  .guard-item h3{ font-size:20px; margin:10px 0 8px; color:#fff; }
+  .guard-item p{ font-size:14px; color:#c9c9c9; }
+
+  /* cta */
+  .cta-box{
+    padding:56px 40px; text-align:center; background:var(--cobalt); color:#fff;
+    position:relative;
+  }
+  .cta-box h2{ font-size:clamp(28px,4vw,42px); margin-bottom:16px;}
+  .cta-box p{ font-size:16px; margin-bottom:30px; opacity:.9; }
+  .cta-form{ display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .cta-form input{
+    font-family:'IBM Plex Mono'; font-size:15px;
+    padding:14px 16px; border:var(--border-w) solid var(--ink);
+    min-width:280px; background:#fff; color:var(--ink);
+  }
+  .cta-form input::placeholder{ color:#777; }
+
+  footer{ padding:40px 0; border-top:var(--border-w) solid var(--ink); }
+  .foot-row{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; font-family:'IBM Plex Mono'; font-size:13px; color:#555; }
+  .foot-social{ display:flex; gap:12px; }
+  .foot-social a{
+    width:34px; height:34px;
+    border:2px solid var(--ink);
+    display:flex; align-items:center; justify-content:center;
+    transition:transform .12s ease, background .12s ease;
+  }
+  .foot-social a:hover{ background:var(--acid); transform:translate(-2px,-2px); }
+  .foot-social svg{ width:16px; height:16px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap row">
+    <div class="logo"><span class="star"></span> WISP</div>
+    <div class="navlinks">
+      <a href="#how">How it works</a>
+      <a href="#templates">Templates</a>
+      <a href="#safety">Guardrails</a>
+    </div>
+    <a href="#join" class="btn" style="padding:10px 18px; font-size:14px;">Join waitlist</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow">✦ Built on Soroban / Stellar</div>
+      <h1>Describe your idea.<br><span class="hl">Soroban builds it.</span></h1>
+      <p class="lede">Tell Wisp what you want to build — a crowdfund, a marketplace, a membership pass — and it generates the smart contract, the frontend, and deploys it to Stellar. No Rust required.</p>
+      <div class="hero-cta">
+        <a href="#join" class="btn">Start building →</a>
+        <a href="#how" class="btn ghost">See how it works</a>
+      </div>
+    </div>
+
+    <div class="box terminal">
+      <div class="term-bar">
+        <span></span><span></span><span></span>
+        <div class="fname">wisp — new project</div>
+      </div>
+      <div class="term-body" id="termBody"></div>
+    </div>
+  </div>
+</header>
+
+<div class="ticker-wrap">
+  <div class="ticker">
+    <span>SOROBAN</span><span>FREIGHTER WALLET</span><span>TESTNET FIRST</span><span>AUDITED TEMPLATES</span><span>RUST → WASM</span><span>ONE-CLICK DEPLOY</span>
+    <span>SOROBAN</span><span>FREIGHTER WALLET</span><span>TESTNET FIRST</span><span>AUDITED TEMPLATES</span><span>RUST → WASM</span><span>ONE-CLICK DEPLOY</span>
+  </div>
+</div>
+
+<section id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="tag">The process</span>
+      <h2>From sentence to live contract</h2>
+      <p>Three steps, in this exact order — each one gates the next, so nothing reaches mainnet untested.</p>
+    </div>
+    <div class="steps">
+      <div class="box step">
+        <span class="num">01</span>
+        <h3>Describe it</h3>
+        <p>Type your idea in plain language. Wisp asks a couple of clarifying questions — refund window, fees, roles — and turns it into a spec.</p>
+      </div>
+      <div class="box step">
+        <span class="num">02</span>
+        <h3>Generate &amp; test</h3>
+        <p>Wisp matches an audited Soroban template, fills it in, and runs it through the local sandbox test suite before you see it.</p>
+      </div>
+      <div class="box step">
+        <span class="num">03</span>
+        <h3>Deploy</h3>
+        <p>Ships to testnet by default. Connect a wallet and promote to mainnet only once your tests are green.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="templates">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="tag">Starting points</span>
+      <h2>Built from audited templates, not blank Rust</h2>
+      <p>Every generated contract starts from a reviewed base. The AI fills in your parameters — it doesn't invent your escrow logic from scratch.</p>
+    </div>
+    <div class="tpl-grid">
+      <div class="box tpl-card">
+        <div class="icon">$</div>
+        <h3>Refundable crowdfund</h3>
+        <p>Goal-based fundraising. Backers are refunded automatically if the target isn't hit by the deadline.</p>
+        <div class="tag audited">Audited base</div>
+      </div>
+      <div class="box tpl-card">
+        <div class="icon">◆</div>
+        <h3>Token-gated access</h3>
+        <p>Gate content, a Discord role, or a page behind ownership of a token or NFT.</p>
+        <div class="tag audited">Audited base</div>
+      </div>
+      <div class="box tpl-card">
+        <div class="icon">⇄</div>
+        <h3>Marketplace escrow</h3>
+        <p>Buyer funds held in escrow, released to the seller on delivery confirmation.</p>
+        <div class="tag audited">Audited base</div>
+      </div>
+      <div class="box tpl-card">
+        <div class="icon">↻</div>
+        <h3>Subscription vault</h3>
+        <p>Recurring payments in USDC or XLM with pause, cancel, and grace-period logic built in.</p>
+        <div class="tag audited">Audited base</div>
+      </div>
+      <div class="box tpl-card">
+        <div class="icon">✦</div>
+        <h3>Membership NFT</h3>
+        <p>Tiered membership passes with role-based perks and transferability rules.</p>
+        <div class="tag audited">Audited base</div>
+      </div>
+      <div class="box tpl-card">
+        <div class="icon">→</div>
+        <h3>Payroll stream</h3>
+        <p>Continuous or scheduled payouts to a team, with multi-sig approval for large transfers.</p>
+        <div class="tag audited">Audited base</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="safety" class="guard-wrap">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="tag" style="background:var(--ink); color:var(--acid); border-color:var(--acid);">Guardrails</span>
+      <h2 style="color:#fff;">Non-technical shouldn't mean unsafe</h2>
+      <p style="color:#ccc;">Financial contracts with subtle bugs cause real losses across the industry. Wisp is built around defaults that make that harder to do by accident.</p>
+    </div>
+    <div class="guard-grid">
+      <div class="guard-item">
+        <div class="k">Default</div>
+        <h3>Testnet first, always</h3>
+        <p>Every project deploys to testnet automatically. Mainnet is a separate, explicit step.</p>
+      </div>
+      <div class="guard-item">
+        <div class="k">Gate</div>
+        <h3>Tests must pass to promote</h3>
+        <p>The generated test suite has to go green before Pulsar will let you deploy to mainnet.</p>
+      </div>
+      <div class="guard-item">
+        <div class="k">Base</div>
+        <h3>Templates, not blank slate</h3>
+        <p>Contract logic starts from a reviewed template. The AI fills in parameters, not core logic.</p>
+      </div>
+      <div class="guard-item">
+        <div class="k">Visible</div>
+        <h3>Unaudited is labeled unaudited</h3>
+        <p>Anything outside the template library ships with a visible warning until a human reviews it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="join">
+  <div class="wrap">
+    <div class="box cta-box">
+      <h2>Get early access</h2>
+      <p>We're onboarding builders in small batches while the template library grows.</p>
+      <div class="cta-form" id="ctaForm">
+        <input type="email" id="waitlistEmail" placeholder="you@example.com" />
+        <button class="btn dark" id="waitlistBtn" style="box-shadow:6px 6px 0 #001;" onclick="joinWaitlist()">Join the waitlist →</button>
+      </div>
+      <div id="waitlistMsg" style="margin-top:14px; font-family:'IBM Plex Mono'; font-size:13px; min-height:18px;"></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-row">
+    <div>© 2026 WISP — built on Stellar</div>
+    <div class="foot-social">
+      <a href="https://x.com/" target="_blank" rel="noopener" aria-label="X">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M18.9 2H22l-7.6 8.7L23.3 22h-7.2l-5.6-7.3L4 22H1l8.1-9.3L0.9 2h7.4l5.1 6.7L18.9 2Zm-1.3 18h2L6.5 4H4.4l13.2 16Z" fill="currentColor"/></svg>
+      </a>
+      <a href="https://linkedin.com/" target="_blank" rel="noopener" aria-label="LinkedIn">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5ZM3 9h4v12H3V9Zm7 0h3.8v1.7h.05c.53-1 1.83-2.05 3.77-2.05 4.03 0 4.78 2.65 4.78 6.1V21h-4v-5.5c0-1.3-.02-3-1.83-3-1.83 0-2.1 1.43-2.1 2.9V21h-4V9Z" fill="currentColor"/></svg>
+      </a>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* ---------- dynamic typing terminal ---------- */
+const scenarios = [
+  {
+    prompt: "a crowdfunding app where backers get\n  refunded if the goal isn't met",
+    lines: [
+      { text: "// parsing intent...", cls: "term-muted" },
+      { text: "// matched template: escrow-refundable", cls: "term-muted" },
+      { text: "// generating contract... ok", cls: "term-out" },
+      { text: "// running local sandbox tests... 6/6 passed", cls: "term-out" },
+      { text: "// deployed to testnet", cls: "term-out" }
+    ]
+  },
+  {
+    prompt: "a membership NFT with 3 tiers and\n  perk-based access",
+    lines: [
+      { text: "// parsing intent...", cls: "term-muted" },
+      { text: "// matched template: membership-nft", cls: "term-muted" },
+      { text: "// generating contract... ok", cls: "term-out" },
+      { text: "// running local sandbox tests... 8/8 passed", cls: "term-out" },
+      { text: "// deployed to testnet", cls: "term-out" }
+    ]
+  },
+  {
+    prompt: "a marketplace escrow that releases funds\n  on delivery confirmation",
+    lines: [
+      { text: "// parsing intent...", cls: "term-muted" },
+      { text: "// matched template: marketplace-escrow", cls: "term-muted" },
+      { text: "// generating contract... ok", cls: "term-out" },
+      { text: "// running local sandbox tests... 5/5 passed", cls: "term-out" },
+      { text: "// deployed to testnet", cls: "term-out" }
+    ]
+  }
+];
+
+const termBody = document.getElementById('termBody');
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function wait(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function typeInto(el, text, speed){
+  if (reduceMotion){ el.textContent = text; return; }
+  for (let i = 0; i <= text.length; i++){
+    el.textContent = text.slice(0, i);
+    await wait(speed);
+  }
+}
+
+async function runScenario(scenario){
+  termBody.innerHTML = '';
+
+  const promptLine = document.createElement('div');
+  promptLine.className = 'term-line';
+  const sym = document.createElement('span');
+  sym.className = 'prompt-sym';
+  sym.textContent = '> ';
+  const typedSpan = document.createElement('span');
+  const cursor = document.createElement('span');
+  cursor.className = 'type-cursor';
+  promptLine.appendChild(sym);
+  promptLine.appendChild(typedSpan);
+  promptLine.appendChild(cursor);
+  termBody.appendChild(promptLine);
+
+  await typeInto(typedSpan, scenario.prompt, 28);
+  await wait(400);
+  cursor.remove();
+
+  for (const line of scenario.lines){
+    await wait(reduceMotion ? 0 : 350);
+    const div = document.createElement('div');
+    div.className = 'term-line ' + line.cls;
+    div.textContent = line.text;
+    termBody.appendChild(div);
+  }
+
+  const nextPrompt = document.createElement('div');
+  nextPrompt.className = 'term-line';
+  nextPrompt.innerHTML = '<span class="prompt-sym">&gt;</span> <span class="type-cursor"></span>';
+  termBody.appendChild(nextPrompt);
+
+  await wait(reduceMotion ? 0 : 2600);
+}
+
+async function loopScenarios(){
+  let i = 0;
+  while (true){
+    await runScenario(scenarios[i % scenarios.length]);
+    i++;
+    if (reduceMotion) break;
+  }
+}
+loopScenarios();
+
+/* ---------- waitlist signup (persistent storage) ---------- */
+async function joinWaitlist(){
+  const input = document.getElementById('waitlistEmail');
+  const btn = document.getElementById('waitlistBtn');
+  const msg = document.getElementById('waitlistMsg');
+  const email = input.value.trim();
+
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailPattern.test(email)){
+    msg.textContent = 'Enter a valid email to join.';
+    msg.style.color = 'var(--coral)';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Joining...';
+  msg.textContent = '';
+
+  try {
+    const key = 'waitlist:' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const result = await window.storage.set(key, JSON.stringify({ email, joinedAt: new Date().toISOString() }), true);
+    if (!result) throw new Error('Storage write failed');
+
+    input.value = '';
+    input.style.display = 'none';
+    btn.style.display = 'none';
+    msg.textContent = "You're on the list ✓ — we'll be in touch.";
+    msg.style.color = '#fff';
+  } catch (err){
+    btn.disabled = false;
+    btn.textContent = 'Join the waitlist →';
+    msg.textContent = "Couldn't save that just now — try again in a moment.";
+    msg.style.color = 'var(--coral)';
+  }
+}
+</script>
+</body>
+</html>
