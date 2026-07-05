@@ -13,7 +13,6 @@ export const metadata: Metadata = {
   title: 'Wisp — Describe your idea. Soroban builds it.',
   description:
     'Wisp turns a plain-English product idea into a working Stellar/Soroban smart contract and frontend, auto-deployed.',
-  generator: 'v0.app',
 }
 
 export const viewport: Viewport = {
