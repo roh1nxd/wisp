@@ -22,3 +22,4 @@ npm-debug.log*
 
 # duplicate lock file — keeping package-lock.json only
 pnpm-lock.yaml
+.vercel
