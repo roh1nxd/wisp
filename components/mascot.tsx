@@ -1,23 +1,25 @@
-'use client'
+"use client"
 
 import { useEffect, useRef } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
+import { cn } from '@/lib/utils'
 
 function Eye({ irisRef }: { irisRef: React.RefObject<HTMLDivElement | null> }) {
   return (
-    <div className="relative flex h-14 w-9 items-center justify-center overflow-hidden rounded-full bg-white shadow-[inset_0_-4px_8px_rgba(0,0,0,0.15)] sm:h-16 sm:w-10">
+    <div className="relative w-7.5 h-7.5 bg-white/95 rounded-full border border-[var(--border-strong)]/30 shadow-xs flex items-center justify-center overflow-hidden select-none">
       <div
         ref={irisRef}
-        className="size-3.5 rounded-full bg-[#0b1020] sm:size-4"
-        style={{ willChange: 'transform' }}
+        className="w-3.5 h-3.5 bg-[var(--text-primary)] rounded-full transition-transform duration-75"
       />
     </div>
   )
 }
 
-export function Mascot() {
+export function Mascot({ className }: { className?: string }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const leftIris = useRef<HTMLDivElement>(null)
   const rightIris = useRef<HTMLDivElement>(null)
+  const shouldReduceMotion = useReducedMotion()
 
   useEffect(() => {
     // Respect reduced motion + skip tracking on touch/coarse pointers (mobile)
@@ -28,7 +30,7 @@ export function Mascot() {
     let frame = 0
     let pointer: { x: number; y: number } | null = null
 
-    const MAX = 6 // px the iris can travel from center
+    const MAX = 5 // px the iris can travel from center
     const EASE = 0.15 // lower = smoother/slower trailing
 
     // current (eased) offset per iris, kept between frames
@@ -80,45 +82,29 @@ export function Mascot() {
   }, [])
 
   return (
-    <div
+    <motion.div
       ref={rootRef}
       aria-hidden="true"
-      className="pointer-events-none relative mx-auto h-28 w-40 select-none sm:h-32 sm:w-48"
+      initial={shouldReduceMotion ? {} : { opacity: 0, scale: 0.95 }}
+      whileInView={shouldReduceMotion ? {} : { opacity: 0.8, scale: 1 }}
+      viewport={{ once: true }}
+      transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+      className={cn("relative flex flex-col items-center justify-center select-none overflow-visible opacity-80 hover:opacity-95 transition-all duration-300", className)}
     >
       {/* glow puddle under the mascot */}
-      <div
-        className="absolute -bottom-2 left-1/2 h-10 w-40 -translate-x-1/2 rounded-full opacity-70 blur-2xl"
-        style={{
-          background:
-            'radial-gradient(ellipse at center, rgba(var(--aurora-violet),0.6) 0%, rgba(0,0,0,0) 70%)',
-        }}
-      />
+      <div className="absolute -bottom-2 w-[85%] h-3 bg-[var(--accent)]/10 rounded-full blur-md" />
 
-      {/* glossy body, cropped at the bottom so it peeks up */}
-      <div
-        className="absolute inset-x-0 top-0 h-40 rounded-[42%_42%_38%_38%/48%_48%_40%_40%] border border-white/20"
-        style={{
-          background:
-            'linear-gradient(160deg, #b9a7ff 0%, #7c68ff 38%, #5b46e0 70%, #3b2fd9 100%)',
-          boxShadow:
-            'inset 0 8px 18px rgba(255,255,255,0.45), inset 0 -14px 26px rgba(20,10,60,0.55), 0 20px 45px -12px rgba(59,47,217,0.65)',
-        }}
-      >
+      {/* glossy body, fully rounded out */}
+      <div className="relative w-full h-full bg-gradient-to-b from-[var(--bg-surface)]/75 to-[var(--bg-elevated)]/75 rounded-full border border-[var(--border-strong)]/45 shadow-[0_8px_32px_rgba(28,27,23,0.03)] backdrop-blur-3xs flex items-center justify-center overflow-hidden">
         {/* top gloss highlight */}
-        <div
-          className="absolute left-1/2 top-3 h-8 w-24 -translate-x-1/2 rounded-full opacity-70 blur-md"
-          style={{
-            background:
-              'linear-gradient(180deg, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0) 100%)',
-          }}
-        />
+        <div className="absolute top-0 inset-x-0 h-1/2 bg-gradient-to-b from-white/20 to-transparent pointer-events-none" />
 
         {/* eyes */}
-        <div className="absolute left-1/2 top-8 flex -translate-x-1/2 gap-3 sm:top-9 sm:gap-3.5">
+        <div className="flex gap-3.5 items-center justify-center z-10">
           <Eye irisRef={leftIris} />
           <Eye irisRef={rightIris} />
         </div>
       </div>
-    </div>
+    </motion.div>
   )
 }

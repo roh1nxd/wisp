@@ -1,13 +1,13 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { Inter, Geist_Mono } from 'next/font/google'
 import { ClerkProvider } from '@clerk/nextjs'
-import { dark } from '@clerk/themes'
+import { shadcn } from '@clerk/ui/themes'
 import { AuroraBackground } from '@/components/aurora-background'
 import './globals.css'
 
-const geistSans = Geist({ subsets: ['latin'], variable: '--font-geist-sans' })
-const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-geist-mono' })
+const inter = Inter({ subsets: ['latin'], variable: '--font-sans' })
+const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-mono' })
 
 export const metadata: Metadata = {
   title: 'Wisp — Describe your idea. Soroban builds it.',
@@ -16,8 +16,8 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  colorScheme: 'dark',
-  themeColor: '#070710',
+  colorScheme: 'light',
+  themeColor: '#FAF9F6',
 }
 
 export default function RootLayout({
@@ -26,28 +26,56 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <ClerkProvider
-      appearance={{
-        theme: dark,
-        variables: {
-          colorBackground: '#0b1020',
-          colorPrimary: '#6c4cf0',
-          borderRadius: '0.9rem',
-        },
-        elements: {
-          card: 'border border-white/10 bg-white/[0.04] backdrop-blur-xl shadow-2xl',
-          formButtonPrimary:
-            'bg-white text-black hover:bg-white/90 normal-case font-medium',
-        },
-      }}
-    >
-      <html lang="en" className={`${geistSans.variable} ${geistMono.variable} bg-background`}>
-        <body className="font-sans antialiased">
+    <html lang="en" className={`${inter.variable} ${geistMono.variable} antialiased`}>
+      <body className="min-h-screen bg-[var(--bg-page)] text-[var(--text-primary)] font-sans transition-colors duration-150">
+        <ClerkProvider
+          appearance={{
+            theme: shadcn,
+            variables: {
+              fontFamily: 'var(--font-sans)',
+              colorPrimary: '#C85C39',
+              colorBackground: '#FAF9F6',
+              colorText: '#1C1B17',
+              colorTextSecondary: '#4E4B42',
+              colorInputBackground: '#F4F3EE',
+              colorInputText: '#1C1B17',
+              borderRadius: '12px',
+            },
+            elements: {
+              // Custom opaque background matching our cream theme and eliminating transparency
+              card: {
+                backgroundColor: '#FAF9F6',
+                border: '1px solid rgba(28, 27, 23, 0.16)',
+                boxShadow: '0 8px 30px rgba(28, 27, 23, 0.03)',
+              },
+              userButtonPopoverCard: {
+                backgroundColor: '#FAF9F6',
+                border: '1px solid rgba(28, 27, 23, 0.16)',
+                boxShadow: '0 8px 30px rgba(28, 27, 23, 0.03)',
+              },
+              modalContent: {
+                backgroundColor: '#FAF9F6',
+                border: '1px solid rgba(28, 27, 23, 0.16)',
+                boxShadow: '0 20px 40px rgba(28, 27, 23, 0.08)',
+              },
+              navbar: {
+                backgroundColor: '#F4F3EE',
+                borderRight: '1px solid rgba(28, 27, 23, 0.08)',
+              },
+              pageScrollable: {
+                backgroundColor: '#FAF9F6',
+              },
+              profileSection: {
+                borderBottom: '1px solid rgba(28, 27, 23, 0.08)',
+              },
+            }
+          }}
+        >
           <AuroraBackground />
           {children}
           {process.env.NODE_ENV === 'production' && <Analytics />}
-        </body>
-      </html>
-    </ClerkProvider>
+        </ClerkProvider>
+      </body>
+    </html>
   )
 }

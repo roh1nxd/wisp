@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soroban Escrow Portal</title>
+  <!-- Tailwind CSS via Play CDN for rapid prototyping with robust styles -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts for outfit typography -->
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Freighter API SDK -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-freighter-api/1.1.2/index.min.js"></script>
+  <style>
+    body {
+      font-family: 'Outfit', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-[#0b0f19] text-slate-100 min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-lg bg-[#111827]/80 backdrop-blur-md rounded-3xl border border-white/10 p-8 shadow-2xl">
+    
+    <!-- Title -->
+    <div class="mb-8 flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent">Soroban Escrow</h1>
+        <p class="text-xs text-slate-400 mt-1">Secure funds release via Freighter Wallet</p>
+      </div>
+      <span class="px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-full text-[10px] font-semibold tracking-wider uppercase">Soroban contract</span>
+    </div>
+
+    <!-- Wallet Connection State -->
+    <div class="mb-6 bg-slate-900/50 rounded-2xl border border-white/[0.05] p-5">
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-slate-400">Connection status:</span>
+        <span id="connection-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-500/10 border border-red-500/20 text-red-400">Disconnected</span>
+      </div>
+      
+      <div class="mt-4">
+        <button id="connect-wallet-btn" class="w-full py-2.5 bg-violet-600 hover:bg-violet-500 transition-colors text-xs font-semibold rounded-xl text-white shadow-lg shadow-violet-600/20">
+          Connect Freighter Wallet
+        </button>
+      </div>
+
+      <div id="wallet-info" class="mt-4 hidden">
+        <p class="text-[11px] text-slate-400 uppercase tracking-wider">Public Key</p>
+        <p id="wallet-address" class="text-xs font-mono bg-black/40 rounded-lg p-2.5 border border-white/[0.05] text-violet-300 break-all select-all mt-1"></p>
+      </div>
+    </div>
+
+    <!-- Escrow Actions -->
+    <div class="bg-slate-900/50 rounded-2xl border border-white/[0.05] p-5">
+      <h2 class="text-sm font-semibold text-slate-300 mb-4">Escrow Details</h2>
+      
+      <div class="space-y-3 mb-6 text-xs">
+        <div class="flex justify-between py-1.5 border-b border-white/[0.05]">
+          <span class="text-slate-400">Buyer (Depositor)</span>
+          <span class="font-mono text-slate-300">G...BUYER</span>
+        </div>
+        <div class="flex justify-between py-1.5 border-b border-white/[0.05]">
+          <span class="text-slate-400">Seller (Recipient)</span>
+          <span class="font-mono text-slate-300">G...SELLER</span>
+        </div>
+        <div class="flex justify-between py-1.5">
+          <span class="text-slate-400">Locked Amount</span>
+          <span class="font-semibold text-green-400">100.00 XLM</span>
+        </div>
+      </div>
+
+      <button id="release-funds-btn" disabled class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors text-sm font-semibold rounded-xl text-white shadow-lg shadow-indigo-600/20">
+        Confirm Delivery & Release Funds
+      </button>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

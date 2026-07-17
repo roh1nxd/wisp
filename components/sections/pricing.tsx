@@ -2,10 +2,11 @@
 
 import { useState } from 'react'
 import { Check, Crown } from 'lucide-react'
-import { useAuth, useClerk } from '@clerk/nextjs'
 import { Reveal } from '@/components/reveal'
 import { checkout, type PlanId } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { motion } from 'framer-motion'
+import { PixelCard } from '@/components/pixel-card'
 
 const PLANS: {
   id: PlanId
@@ -57,21 +58,13 @@ const PLANS: {
 ]
 
 export function Pricing() {
-  const { isSignedIn } = useAuth()
-  const clerk = useClerk()
   const [yearly, setYearly] = useState(false)
 
   async function handleSelectPlan(plan: PlanId) {
-    if (!isSignedIn) {
-      clerk.openSignUp({ forceRedirectUrl: `/dashboard?plan=${plan}` })
-      return
-    }
     try {
-      // TODO: connect to POST /api/billing/checkout
       const { url } = await checkout(plan)
       if (url) window.location.href = url
     } catch {
-      // Endpoint not wired yet; send the user to the dashboard.
       window.location.href = `/dashboard?plan=${plan}`
     }
   }
@@ -82,107 +75,122 @@ export function Pricing() {
   }
 
   return (
-    <section id="pricing" className="scroll-mt-20 px-6 py-24">
-      <div className="mx-auto max-w-6xl">
-        <Reveal className="text-center">
-          <p className="label-caps">Pricing</p>
-          <h2 className="mt-3 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
-            Simple pricing that scales with you.
-          </h2>
+    <section id="pricing" className="w-full bg-[var(--bg-page)] py-20 sm:py-28 border-b border-[var(--border-default)]">
+      <div className="mx-auto max-w-7xl px-6 flex flex-col items-center">
+        <Reveal>
+          <div className="max-w-3xl text-center flex flex-col items-center gap-4 mb-12">
+            <p className="text-xs font-mono font-bold tracking-widest text-[var(--accent)] uppercase">
+              Pricing
+            </p>
+            <h2 className="font-sans text-3xl sm:text-4xl font-extrabold tracking-tight text-[var(--text-primary)]">
+              Simple pricing that scales with you.
+            </h2>
 
-          {/* Month / Year billing toggle */}
-          <div className="glass mx-auto mt-8 inline-flex items-center gap-1 rounded-full p-1">
-            <button
-              type="button"
-              onClick={() => setYearly(false)}
-              className={cn(
-                'rounded-full px-4 py-1.5 text-sm font-medium transition-colors',
-                !yearly ? 'bg-white text-black' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              Monthly
-            </button>
-            <button
-              type="button"
-              onClick={() => setYearly(true)}
-              className={cn(
-                'rounded-full px-4 py-1.5 text-sm font-medium transition-colors',
-                yearly ? 'bg-white text-black' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              Yearly
-            </button>
+            {/* Month / Year billing toggle */}
+            <div className="inline-flex items-center gap-1 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-1 mt-4 shadow-xs select-none">
+              <button
+                type="button"
+                onClick={() => setYearly(false)}
+                className={cn(
+                  "px-4 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 cursor-pointer",
+                  !yearly
+                    ? "bg-[var(--accent)] text-[var(--accent-text-on)] shadow-sm"
+                    : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                )}
+              >
+                Monthly
+              </button>
+              <button
+                type="button"
+                onClick={() => setYearly(true)}
+                className={cn(
+                  "px-4 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 cursor-pointer",
+                  yearly
+                    ? "bg-[var(--accent)] text-[var(--accent-text-on)] shadow-sm"
+                    : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                )}
+              >
+                Yearly
+              </button>
+            </div>
           </div>
         </Reveal>
 
-        <div className="mt-14 grid items-center gap-5 md:grid-cols-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-6xl mt-6">
           {PLANS.map((plan, i) => (
             <Reveal key={plan.id} delay={i * 0.08}>
-              <div
+              <PixelCard
                 className={cn(
-                  'relative flex h-full flex-col rounded-3xl p-6',
-                  plan.popular
-                    ? 'glass-strong border-white/20 md:scale-[1.05] md:py-8'
-                    : 'glass glass-hover',
+                  "flex flex-col h-full relative group transition-all duration-300",
+                  plan.popular && "border-[var(--accent)]/40 shadow-md ring-1 ring-[var(--accent)]/15"
                 )}
               >
-                {/* blue radial glow behind featured tier */}
-                {plan.popular ? (
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute -inset-px -z-10 rounded-3xl opacity-80 blur-xl"
-                    style={{
-                      background:
-                        'radial-gradient(120% 80% at 50% 0%, rgba(var(--aurora-blue),0.35) 0%, rgba(var(--aurora-violet),0.15) 40%, rgba(0,0,0,0) 70%)',
-                    }}
-                  />
-                ) : null}
+                {/* Content inner padding wrapper */}
+                <div className="p-8 flex flex-col gap-6 h-full relative z-20">
+                  {/* Subtle glow behind featured tier */}
+                  {plan.popular ? (
+                    <div className="absolute inset-0 bg-radial from-[var(--accent)]/5 to-transparent pointer-events-none rounded-2xl z-0" aria-hidden="true" />
+                  ) : null}
 
-                {plan.popular ? (
-                  <span className="absolute -top-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-black">
-                    <Crown className="size-3.5" />
-                    Most popular
-                  </span>
-                ) : null}
+                  <div className="relative z-10 flex flex-col gap-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xl font-bold text-[var(--text-primary)] font-sans">
+                        {plan.name}
+                      </h3>
+                      {plan.popular ? (
+                        <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-2xs font-semibold text-[var(--accent)] bg-[var(--accent-soft)] border border-[var(--accent)]/20 uppercase tracking-wider font-mono">
+                          <Crown className="h-3 w-3" />
+                          Popular
+                        </span>
+                      ) : null}
+                    </div>
 
-                <h3 className="text-sm font-medium tracking-tight text-muted-foreground">
-                  {plan.name}
-                </h3>
-                <div className="mt-3 flex items-baseline gap-1">
-                  <span className="font-mono text-4xl font-semibold tracking-tight text-foreground">
-                    {displayPrice(plan.price)}
-                  </span>
-                  <span className="text-sm text-muted-foreground">
-                    {yearly ? '/yr' : '/mo'}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm text-muted-foreground">{plan.blurb}</p>
-
-                <button
-                  type="button"
-                  data-plan={plan.id}
-                  onClick={() => handleSelectPlan(plan.id)}
-                  className={cn(
-                    'mt-6 w-full rounded-full px-4 py-2.5 text-sm font-medium transition-transform hover:scale-[1.02]',
-                    plan.popular
-                      ? 'gradient-border bg-white text-black'
-                      : 'border border-white/15 bg-white/[0.06] text-foreground hover:bg-white/[0.12]',
-                  )}
-                >
-                  Get started
-                </button>
-
-                <ul className="mt-6 space-y-3 border-t border-white/[0.08] pt-6">
-                  {plan.features.map((feature) => (
-                    <li key={feature} className="flex items-start gap-2.5 text-sm">
-                      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-white/10">
-                        <Check className="size-3 text-foreground" />
+                    <div className="flex items-baseline gap-1 text-[var(--text-primary)]">
+                      <span className="text-4xl font-extrabold tracking-tight">
+                        {displayPrice(plan.price)}
                       </span>
-                      <span className="text-muted-foreground">{feature}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+                      <span className="text-xs text-[var(--text-secondary)] font-medium">
+                        {yearly ? '/yr' : '/mo'}
+                      </span>
+                    </div>
+
+                    <p className="text-sm text-[var(--text-secondary)] leading-relaxed min-h-[40px]">
+                      {plan.blurb}
+                    </p>
+                  </div>
+
+                  <div className="relative z-10">
+                    <motion.button
+                      type="button"
+                      data-plan={plan.id}
+                      onClick={() => handleSelectPlan(plan.id)}
+                      whileHover={{ scale: 1.015 }}
+                      whileTap={{ scale: 0.98 }}
+                      className={cn(
+                        "w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150 flex items-center justify-center cursor-pointer shadow-xs",
+                        plan.popular
+                          ? "bg-[var(--accent)] text-[var(--accent-text-on)] hover:bg-[var(--accent-hover)] font-semibold"
+                          : "border border-[var(--border-strong)] text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] bg-transparent"
+                      )}
+                    >
+                      Get started
+                    </motion.button>
+                  </div>
+
+                  <div className="h-px bg-[var(--border-default)] w-full relative z-10" />
+
+                  <ul className="space-y-3.5 mt-2 relative z-10">
+                    {plan.features.map((feature) => (
+                      <li key={feature} className="flex items-center gap-3">
+                        <span className="flex items-center justify-center h-4 w-4 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/5">
+                          <Check className="h-2.5 w-2.5" />
+                        </span>
+                        <span className="text-xs text-[var(--text-secondary)] font-medium leading-none">{feature}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </PixelCard>
             </Reveal>
           ))}
         </div>

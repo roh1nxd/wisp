@@ -1,53 +1,39 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { ArrowUp, Loader2, Globe, Link2 } from 'lucide-react'
-import { useAuth, useClerk } from '@clerk/nextjs'
-import { generateProject } from '@/lib/api'
+import { ArrowUp } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { motion } from 'framer-motion'
+import { useUser, useClerk } from '@clerk/nextjs'
 
 const EXAMPLES = [
-  'Refundable crowdfund',
-  'Membership NFT',
-  'Marketplace escrow',
-  'Token-gated vault',
+  'Simple token',
+  'To-do list dApp',
+  'Voting contract',
+  'Tip jar',
 ]
 
-export function PromptBox({
-  autofocus = false,
-  redirectAfter = '/dashboard',
-}: {
-  autofocus?: boolean
-  redirectAfter?: string
-}) {
+export function PromptBox({ autofocus = false }: { autofocus?: boolean }) {
+  const router = useRouter()
   const [value, setValue] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-
-  const { isSignedIn } = useAuth()
+  const { isSignedIn, isLoaded } = useUser()
   const clerk = useClerk()
 
-  async function handleGeneratePrompt() {
+  function handleGeneratePrompt() {
     const prompt = value.trim()
-    if (!prompt || loading) return
+    if (!prompt) return
 
-    // Signed-out users are prompted to sign up before generating.
+    if (!isLoaded) return
+
     if (!isSignedIn) {
-      clerk.openSignUp({ forceRedirectUrl: redirectAfter })
+      clerk.openSignIn({
+        forceRedirectUrl: `/workspace?prompt=${encodeURIComponent(prompt)}`
+      })
       return
     }
 
-    setError(null)
-    setLoading(true)
-    try {
-      // TODO: connect to POST /api/projects/generate
-      await generateProject(prompt)
-      setValue('')
-    } catch {
-      setError('Generation is not wired up yet. Connect POST /api/projects/generate.')
-    } finally {
-      setLoading(false)
-    }
+    router.push(`/workspace?prompt=${encodeURIComponent(prompt)}`)
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -59,8 +45,8 @@ export function PromptBox({
   }
 
   return (
-    <div className="w-full">
-      <div className="glass-strong relative rounded-3xl p-2.5">
+    <div className="flex flex-col w-full text-left bg-transparent">
+      <div className="flex flex-col bg-transparent">
         <label htmlFor="wisp-prompt" className="sr-only">
           Describe the app you want to build on Stellar
         </label>
@@ -73,68 +59,41 @@ export function PromptBox({
           onKeyDown={handleKeyDown}
           rows={3}
           placeholder="Describe the app you want to build on Stellar..."
-          className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-[15px] leading-relaxed text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+          className="w-full bg-transparent border-0 text-sm sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)]/60 focus:ring-0 focus:outline-none resize-none p-4 pb-2 font-mono"
         />
 
-        <div className="flex items-center justify-between px-2 pb-1 pt-1">
-          {/* left icon buttons */}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              aria-label="Add a reference link"
-              className="flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
-            >
-              <Link2 className="size-[18px]" />
-            </button>
-            <button
-              type="button"
-              aria-label="Browse templates"
-              className="flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
-            >
-              <Globe className="size-[18px]" />
-            </button>
-          </div>
-
-          {/* right action buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleGeneratePrompt}
-              disabled={!value.trim() || loading}
-              className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition-transform hover:scale-[1.03] disabled:opacity-40 disabled:hover:scale-100"
-            >
-              {loading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <>
-                  Generate
-                  <ArrowUp className="size-4" />
-                </>
-              )}
-            </button>
-          </div>
+        <div className="flex items-center justify-end px-4 pb-3 pt-2 border-t border-[var(--border-strong)]/20 select-none">
+          <motion.button
+            type="button"
+            onClick={handleGeneratePrompt}
+            disabled={!value.trim()}
+            whileHover={value.trim() ? { scale: 1.015 } : {}}
+            whileTap={value.trim() ? { scale: 0.98 } : {}}
+            className="inline-flex items-center gap-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:bg-[var(--bg-elevated)] disabled:text-[var(--text-muted)] text-[var(--accent-text-on)] px-5 py-2.2 rounded-full text-xs font-bold shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer select-none active:scale-97 font-sans"
+          >
+            <span>Generate</span>
+            <ArrowUp className="h-3.5 w-3.5" />
+          </motion.button>
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+      <div className="flex flex-wrap gap-2 items-center mt-4 select-none">
         {EXAMPLES.map((ex) => (
-          <button
+          <motion.button
             key={ex}
             type="button"
+            whileHover={{ scale: 1.015 }}
+            whileTap={{ scale: 0.98 }}
             onClick={() => {
               setValue(ex)
               textareaRef.current?.focus()
             }}
-            className="glass rounded-full px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="inline-flex items-center border border-[var(--border-default)]/80 hover:border-[var(--border-strong)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-3.5 py-1.8 rounded-full text-2xs font-mono font-semibold transition-all cursor-pointer shadow-3xs"
           >
             {ex}
-          </button>
+          </motion.button>
         ))}
       </div>
-
-      {error ? (
-        <p className="mt-3 text-center text-xs text-muted-foreground">{error}</p>
-      ) : null}
     </div>
   )
 }
