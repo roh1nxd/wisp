@@ -49,14 +49,6 @@
     "typescript": "5.7.3",
     "prisma": "^5.12.1"
   },
-  "pnpm": {
-    "overrides": {
-      "hono": "4.12.25",
-      "@codemirror/state": "^6.7.1",
-      "@codemirror/view": "^6.43.6",
-      "@codemirror/language": "^6.12.4"
-    }
-  },
   "overrides": {
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
