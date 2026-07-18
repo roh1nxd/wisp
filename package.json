@@ -2,7 +2,7 @@
   "name": "my-project",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@9.15.4",
+  "packageManager": "pnpm@10.0.0",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -51,13 +51,36 @@
     "prisma": "^5.12.1"
   },
   "overrides": {
+    "hono": "4.12.25",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@codemirror/language": "^6.12.4"
   },
   "resolutions": {
+    "hono": "4.12.25",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@codemirror/language": "^6.12.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@clerk/shared",
+      "@google/genai",
+      "@prisma/client",
+      "@prisma/engines",
+      "@reown/appkit",
+      "@stellar/stellar-sdk",
+      "blake-hash",
+      "bufferutil",
+      "core-js",
+      "es5-ext",
+      "prisma",
+      "protobufjs",
+      "secp256k1",
+      "sharp",
+      "tiny-secp256k1",
+      "usb",
+      "utf-8-validate"
+    ]
   }
 }
