@@ -1,5 +1,6 @@
 {
   "framework": "nextjs",
+  "installCommand": "pnpm install --no-frozen-lockfile",
   "functions": {
     "app/api/generate/route.ts": {
       "maxDuration": 60
