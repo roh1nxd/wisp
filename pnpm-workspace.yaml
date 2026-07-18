@@ -1,5 +1,9 @@
+packages:
+  - '.'
+
 allowBuilds:
   '@clerk/shared': true
+  '@google/genai': true
   '@prisma/client': true
   '@prisma/engines': true
   '@reown/appkit': true
@@ -15,3 +19,9 @@ allowBuilds:
   tiny-secp256k1: true
   usb: true
   utf-8-validate: true
+
+overrides:
+  hono: "4.12.25"
+  "@codemirror/state": "^6.7.1"
+  "@codemirror/view": "^6.43.6"
+  "@codemirror/language": "^6.12.4"
