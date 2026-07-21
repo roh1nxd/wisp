@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronRight, FilePlus, FolderPlus, Check, X, Plus } from 'lucide-react'
+import { ChevronRight, FilePlus, FolderPlus, Check, X, Plus, Pencil, Trash2 } from 'lucide-react'
 import { FileIcon } from './FileIcon'
 import { useState, useRef, useEffect } from 'react'
 import { cn } from '@/lib/utils'
@@ -19,6 +19,8 @@ interface FileExplorerProps {
   onSelectFile: (file: FileItem) => void
   selectedFileId?: string
   onCreateFile?: (name: string, type: 'file' | 'folder') => void
+  onDeleteFile?: (fileId: string) => void
+  onRenameFile?: (fileId: string, newName: string) => void
 }
 
 type CreationMode = 'file' | 'folder' | null
@@ -28,17 +30,30 @@ export function FileExplorer({
   onSelectFile,
   selectedFileId,
   onCreateFile,
+  onDeleteFile,
+  onRenameFile,
 }: FileExplorerProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [creationMode, setCreationMode] = useState<CreationMode>(null)
   const [newItemName, setNewItemName] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<FileItem | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (creationMode && inputRef.current) {
       inputRef.current.focus()
     }
   }, [creationMode])
+
+  useEffect(() => {
+    if (editingId && renameInputRef.current) {
+      renameInputRef.current.focus()
+      renameInputRef.current.select()
+    }
+  }, [editingId])
 
   const toggleExpanded = (id: string) => {
     setExpandedIds((prev) => {
@@ -74,20 +89,54 @@ export function FileExplorer({
     setNewItemName('')
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleStartRename = (item: FileItem, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditingId(item.id)
+    setRenameValue(item.name)
+  }
+
+  const handleConfirmRename = (item: FileItem) => {
+    const trimmed = renameValue.trim()
+    if (trimmed && trimmed !== item.name) {
+      onRenameFile?.(item.id, trimmed)
+    }
+    setEditingId(null)
+    setRenameValue('')
+  }
+
+  const handleStartDelete = (item: FileItem, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setConfirmDeleteTarget(item)
+  }
+
+  const handleConfirmDelete = () => {
+    if (confirmDeleteTarget) {
+      onDeleteFile?.(confirmDeleteTarget.id)
+      setConfirmDeleteTarget(null)
+    }
+  }
+
+  const handleKeyDownCreate = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') handleConfirmCreate()
     if (e.key === 'Escape') handleCancelCreate()
+  }
+
+  const handleKeyDownRename = (e: React.KeyboardEvent<HTMLInputElement>, item: FileItem) => {
+    if (e.key === 'Enter') handleConfirmRename(item)
+    if (e.key === 'Escape') setEditingId(null)
   }
 
   const renderItem = (item: FileItem, depth: number = 0) => {
     const isExpanded = expandedIds.has(item.id)
     const isSelected = selectedFileId === item.id
     const isFolder = item.type === 'folder'
+    const isEditing = editingId === item.id
 
     return (
       <div key={item.id} className="flex flex-col">
         <div
           onClick={() => {
+            if (isEditing) return
             if (isFolder) {
               toggleExpanded(item.id)
             } else {
@@ -95,7 +144,7 @@ export function FileExplorer({
             }
           }}
           className={cn(
-            'flex items-center gap-2 py-1.5 px-3 mx-2 rounded-lg cursor-pointer text-xs transition-colors duration-150 select-none group',
+            'flex items-center gap-2 py-1.5 px-3 mx-2 rounded-lg cursor-pointer text-xs transition-colors duration-150 select-none group relative',
             isSelected
               ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-medium border-l border-[var(--accent)] rounded-l-none'
               : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]'
@@ -108,7 +157,41 @@ export function FileExplorer({
             <div className="w-3.5 h-3.5 shrink-0" />
           )}
           <FileIcon name={item.name} isFolder={isFolder} className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{item.name}</span>
+
+          {isEditing ? (
+            <div className="flex-1 flex items-center gap-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+              <input
+                ref={renameInputRef}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => handleKeyDownRename(e, item)}
+                onBlur={() => handleConfirmRename(item)}
+                className="flex-1 bg-[var(--bg-elevated)] border border-[var(--accent)] text-xs text-[var(--text-primary)] px-1 py-0.5 rounded outline-none font-mono min-w-0"
+              />
+            </div>
+          ) : (
+            <>
+              <span className="truncate flex-1">{item.name}</span>
+
+              {/* Hover Actions: Rename & Delete */}
+              <div className="hidden group-hover:flex items-center gap-1 opacity-80 hover:opacity-100 shrink-0">
+                <button
+                  onClick={(e) => handleStartRename(item, e)}
+                  title="Rename file"
+                  className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors cursor-pointer"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={(e) => handleStartDelete(item, e)}
+                  title="Delete file"
+                  className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-red-500 transition-colors cursor-pointer"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            </>
+          )}
         </div>
         {isFolder && isExpanded && item.children && (
           <div className="flex flex-col">
@@ -120,7 +203,7 @@ export function FileExplorer({
   }
 
   return (
-    <div className="flex flex-col h-full bg-[var(--bg-surface)] text-[var(--text-secondary)] select-none">
+    <div className="flex flex-col h-full bg-[var(--bg-surface)] text-[var(--text-secondary)] select-none relative">
       {/* Header */}
       <div className="h-14 border-b border-[var(--border-default)] flex items-center justify-between px-4 shrink-0">
         <h2 className="text-xs font-mono font-bold tracking-widest text-[var(--text-primary)] uppercase select-none">
@@ -161,7 +244,7 @@ export function FileExplorer({
               ref={inputRef}
               value={newItemName}
               onChange={(e) => setNewItemName(e.target.value)}
-              onKeyDown={handleKeyDown}
+              onKeyDown={handleKeyDownCreate}
               placeholder={creationMode === 'file' ? 'filename.py' : 'folder-name'}
               className="flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none font-mono min-w-0"
             />
@@ -201,6 +284,36 @@ export function FileExplorer({
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {confirmDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-[var(--bg-surface)] border border-[var(--border-strong)] rounded-2xl p-5 max-w-xs w-full shadow-xl space-y-4">
+            <div className="space-y-1 text-center">
+              <h3 className="text-sm font-bold text-[var(--text-primary)] font-sans">
+                Delete {confirmDeleteTarget.name}?
+              </h3>
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                This cannot be undone. Are you sure you want to delete this {confirmDeleteTarget.type}?
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end pt-1">
+              <button
+                onClick={() => setConfirmDeleteTarget(null)}
+                className="flex-1 px-3 py-1.5 rounded-lg border border-[var(--border-default)] hover:bg-[var(--bg-elevated)] text-[var(--text-secondary)] text-xs font-semibold transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="flex-1 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition-all cursor-pointer shadow-xs"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -21,6 +21,5 @@ npm-debug.log*
 # clerk configuration (can include secrets)
 /.clerk/
 
-# duplicate lock file — keeping package-lock.json only
-pnpm-lock.yaml
+# duplicate lock file
 .vercel

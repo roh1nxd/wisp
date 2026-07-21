@@ -36,8 +36,7 @@ try {
     }
   }
   
-  console.log(`[STARTUP] ZAI_API_KEY read check: present = ${!!process.env.ZAI_API_KEY}, length = ${process.env.ZAI_API_KEY?.length || 0}`)
-  console.log(`[STARTUP] ZAI_BASE_URL read check: present = ${!!process.env.ZAI_BASE_URL}, value = "${process.env.ZAI_BASE_URL || ''}"`)
+  console.log(`[STARTUP] GROQ_API_KEY read check: present = ${!!process.env.GROQ_API_KEY}, length = ${process.env.GROQ_API_KEY?.length || 0}`)
 } catch {
   // .env.local not found — env vars may come from the host environment
 }
@@ -61,6 +60,23 @@ const nextConfig = {
     NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL: process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL || '',
     NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL: process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL || '',
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || '',
+  },
+  async headers() {
+    return [
+      {
+        source: '/workspace',
+        headers: [
+          {
+            key: 'Cross-Origin-Embedder-Policy',
+            value: 'require-corp',
+          },
+          {
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin',
+          },
+        ],
+      },
+    ]
   },
   // Fix turbopack workspace root inference
   turbopack: {

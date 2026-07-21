@@ -6,6 +6,7 @@ import { useUser } from '@clerk/nextjs'
 import { IDELayout } from '@/components/CodeEditor/IDELayout'
 import { FileItem } from '@/components/CodeEditor/FileExplorer'
 import { Message } from '@/components/CodeEditor/ChatPanel'
+import { ChatMode } from '@/components/CodeEditor/ChatPanel'
 
 import { Mascot } from '@/components/mascot'
 
@@ -22,16 +23,17 @@ interface ProjectMeta {
 }
 
 const MODEL_NAMES: Record<string, string> = {
-  'gemini-3-flash-preview': 'Gemini 3 Flash (Primary / Free)',
-  'qwen/qwen3-coder:free': 'Qwen 3 Coder (Fast / Free)',
-  'poolside/laguna-m.1:free': 'Poolside Laguna M.1',
-  'cohere/north-mini-code:free': 'Cohere North Mini Code',
-  'poolside/laguna-xs-2.1:free': 'Poolside Laguna XS 2.1',
-  'nvidia/nemotron-3-ultra-550b-a55b:free': 'Nemotron 3 Ultra',
-  'zai/glm-4.7-flash': 'Z.ai GLM-4.7 Flash (Free/Light)',
-  'zai/glm-4.7': 'Z.ai GLM-4.7 (Mid)',
-  'zai/glm-5.2': 'Z.ai GLM-5.2 (Flagship)',
-  'openrouter/free': 'Auto (Always Available)',
+  'gemini-3-flash-preview': 'Gemini 3.5 Flash (Primary / Fast)',
+  'openai/gpt-oss-120b': 'Groq GPT-OSS 120B (High Reasoning)',
+  'qwen/qwen3-32b': 'Groq Qwen3 32B (Coding)',
+  'openai/gpt-oss-20b': 'Groq GPT-OSS 20B (Fast)',
+  'groq/compound': 'Groq Compound (Agentic / Tools)',
+  'groq/compound-mini': 'Groq Compound Mini (Speed)',
+  'moonshotai/kimi-k2-instruct': 'Groq Kimi K2 Instruct',
+  'qwen/qwen3-coder:free': 'OpenRouter Qwen 3 Coder',
+  'cohere/north-mini-code:free': 'OpenRouter Cohere North',
+  'poolside/laguna-m.1:free': 'OpenRouter Laguna M.1',
+  'openrouter/free': 'Auto Fallback (Free Pool)',
 }
 
 
@@ -207,6 +209,34 @@ function extractJSON(text: string): unknown {
   throw new Error('Failed to parse generation content as JSON.')
 }
 
+function extractPlanMarkdown(raw: string): string {
+  if (!raw) return ''
+  const trimmed = raw.trim()
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed) {
+        if (Array.isArray(parsed.files) && parsed.files.length > 0) {
+          const planFile = parsed.files.find(
+            (f: any) => f.path && (f.path.toLowerCase() === 'plan.md' || f.path.toLowerCase().endsWith('/plan.md'))
+          ) || parsed.files[0]
+          if (planFile && typeof planFile.content === 'string') {
+            return extractPlanMarkdown(planFile.content)
+          }
+        }
+        const candidate = parsed.planContent || parsed.content || parsed.plan || parsed.markdown || parsed.summary
+        if (typeof candidate === 'string') {
+          return extractPlanMarkdown(candidate)
+        }
+      }
+    } catch {}
+  }
+  const fenceMatch = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
+  if (fenceMatch) return fenceMatch[1].trim()
+  return trimmed
+}
+
+
 class GenerationError extends Error {
   details: any[]
   constructor(message: string, details?: any[]) {
@@ -239,6 +269,8 @@ export default function WorkspaceClient() {
   const [status, setStatus] = useState<'draft' | 'unaudited' | 'deployed'>('draft')
   const [isInitialized, setIsInitialized] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3-flash-preview')
+  const [selectedMode, setSelectedMode] = useState<ChatMode>('Plan')
+  const [activeFileId, setActiveFileId] = useState<string>()
   const [isSavedInDb, setIsSavedInDb] = useState(false)
 
   const didAutoGenerate = useRef(false)
@@ -246,6 +278,7 @@ export default function WorkspaceClient() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const loadingProjectIdRef = useRef<string | null>(null)
   const generatingProjectIdRef = useRef<string | null>(null)
+  const retryCountRef = useRef<number>(0)
 
   const isNewParam = searchParams.get('new') === 'true'
 
@@ -402,7 +435,7 @@ export default function WorkspaceClient() {
     setFiles((prev) => [...prev, newItem])
   }, [])
 
-  const generateCode = useCallback(async (prompt: string, modelOverride?: string) => {
+  const generateCode = useCallback(async (prompt: string, modelOverride?: string, modeOverride?: ChatMode) => {
     const trimmed = prompt.trim()
     if (!trimmed) return
 
@@ -426,6 +459,7 @@ export default function WorkspaceClient() {
     setIsLoading(true)
 
     const modelToUse = modelOverride || selectedModel
+    const modeToUse = modeOverride || selectedMode
     let activeProjectId = projectId
     let currentIsSaved = isSavedInDb
     const modelToUseEscaped = modelToUse // keep original
@@ -471,6 +505,7 @@ export default function WorkspaceClient() {
           model: modelToUseEscaped,
           projectId: activeProjectId,
           userId: effectiveUserId,
+          mode: modeToUse,
         }),
         signal: controller.signal,
       })
@@ -487,24 +522,129 @@ export default function WorkspaceClient() {
       }
 
       const data = await res.json()
-      
+
+      // ── Plan mode: handle planContent response ───────────────────────────
+      if (modeToUse === 'Plan' && data.planContent) {
+        const planContent: string = extractPlanMarkdown(data.planContent)
+
+        // Inject plan.md as a real FileItem — same mechanism as any generated file
+        const PLAN_FILE_ID = 'plan-md'
+        const planFileItem: FileItem = {
+          id: PLAN_FILE_ID,
+          name: 'plan.md',
+          type: 'file',
+          language: 'md',
+          content: planContent,
+        }
+        setFiles((prev) => {
+          const exists = prev.some((f) => f.id === PLAN_FILE_ID || f.name === 'plan.md')
+          if (exists) return prev.map((f) => (f.id === PLAN_FILE_ID || f.name === 'plan.md') ? planFileItem : f)
+          return [planFileItem, ...prev]
+        })
+
+        // Extract 2-3 line summary from ## Overview section
+        const overviewMatch = planContent.match(/##\s*Overview[\s\S]*?\n([^\n#][^\n]*(?:\n[^\n#][^\n]*){0,2})/)
+        const planSummary = overviewMatch ? overviewMatch[1].trim() : planContent.slice(0, 200)
+
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === workingMsgId
+              ? {
+                  ...msg,
+                  content: '[Plan ready]',
+                  planPath: PLAN_FILE_ID, // reuse planPath field as the file id
+                  planFilename: 'plan.md',
+                  planSummary,
+                }
+              : msg
+          )
+        )
+        return
+      }
+
+      // ── Normal (Agent) mode ────────────────────────────────────────────────
       const isRestart =
         trimmed.toLowerCase() === 'start over' ||
         trimmed.toLowerCase() === 'start fresh' ||
         trimmed.toLowerCase() === 'new project' ||
         trimmed.toLowerCase() === 'scrap this'
 
+      // Guarantee plan.md is never overwritten by generated code files
+      const generatedFiles = (data.files ?? []).filter(
+        (f: any) => f.path !== 'plan.md' && f.path !== '/plan.md' && !f.path.endsWith('/plan.md')
+      )
+
       if (files.length === 0 || isRestart) {
-        const tree = buildFileTree(data.files ?? [])
-        setFiles(tree)
+        const tree = buildFileTree(generatedFiles)
+        const existingPlan = files.find((f) => f.id === 'plan-md' || f.name === 'plan.md')
+        setFiles(existingPlan ? [existingPlan, ...tree] : tree)
       } else {
-        const mergedTree = mergeFiles(files, data.files ?? [])
+        const mergedTree = mergeFiles(files, generatedFiles)
         setFiles(mergedTree)
       }
       setStatus('unaudited')
 
       const summary = data.summary ?? `Generated ${data.files?.length ?? 0} file(s).`
-      const doneContent = `Done! Here's your ${summary}`
+      let doneContent = `Done! Here's your ${summary}`
+
+      // ── Phase 4 Validation Gate: check smart contract compilation ────────
+      const currentFlat = flattenFilesForAPI(
+        files.length === 0 || isRestart
+          ? buildFileTree(generatedFiles)
+          : mergeFiles(files, generatedFiles)
+      )
+      const hasCargo = currentFlat.some(
+        (f) => f.path.toLowerCase() === 'cargo.toml' || f.path.endsWith('.rs')
+      )
+
+      if (hasCargo) {
+        try {
+          const checkRes = await fetch('/api/build-contract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              files: currentFlat.map((f) => ({ path: f.path, content: f.content })),
+            }),
+          })
+
+          const checkData = await checkRes.json()
+
+          if (checkRes.status === 503) {
+            // Cargo toolchain is not installed on this server environment
+            doneContent = `Done! Generated ${generatedFiles.length} file(s).\n\n⚠️ **Note on Contract Verification**: Rust toolchain (\`cargo\`) is not installed on this host server. Contract compilation requires a local Rust toolchain. Code generated successfully — install Rust locally or deploy via Stellar CLI to compile.`
+          } else if (!checkRes.ok && checkData.error) {
+            const autoRetryCount = (retryCountRef.current || 0) + 1
+            retryCountRef.current = autoRetryCount
+
+            if (autoRetryCount <= 2) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === workingMsgId
+                    ? {
+                        ...msg,
+                        content: `⚙️ **Validation Gate**: Contract build failed. Auto-retrying fix (${autoRetryCount}/2)...\n\n\`\`\`\n${checkData.error.slice(0, 300)}\n\`\`\``,
+                      }
+                    : msg
+                )
+              )
+              await generateCode(
+                `The contract build failed with errors:\n\n${checkData.error}\n\nPlease fix all compilation errors in Cargo.toml and src/lib.rs.`,
+                selectedModel,
+                'Agent'
+              )
+              return
+            } else {
+              retryCountRef.current = 0
+              doneContent = `⚠️ **Contract Validation Warnings**: Generated code contains unresolved compilation issues:\n\n\`\`\`\n${checkData.error.slice(0, 400)}\n\`\`\`\n\nYou can ask me to fix specific errors or edit the files directly.`
+            }
+          } else {
+            retryCountRef.current = 0
+            doneContent = `Done! Here's your ${summary}\n\n✅ **Contract Validation Passed**: \`cargo build --target wasm32-unknown-unknown --release\` compiled cleanly.`
+          }
+        } catch (checkErr) {
+          console.warn('[Validation Gate] Contract check skipped:', checkErr)
+        }
+      }
 
       if (data.modelUsed && data.modelUsed !== modelToUseEscaped) {
         const actualName = MODEL_NAMES[data.modelUsed] || data.modelUsed
@@ -616,7 +756,7 @@ export default function WorkspaceClient() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, messages, files, effectiveUserId, projectId, projectName, selectedModel])
+  }, [isLoading, messages, files, effectiveUserId, projectId, projectName, selectedModel, selectedMode])
 
   const handleDeploy = useCallback(async () => {
     const workingMsgId = `deploy-working-${Date.now()}`
@@ -693,6 +833,81 @@ export default function WorkspaceClient() {
       setIsLoading(false)
     }
   }, [projectId, files])
+
+  // ── onPlanAction: Edit or 'OK, build this' ────────────────────────────────
+  const handlePlanAction = useCallback(async (_planFileId: string, action: 'edit' | 'build') => {
+    const PLAN_FILE_ID = 'plan-md'
+
+    if (action === 'edit') {
+      // The plan is a real FileItem in the files state (id: plan-md).
+      // Open it in the editor tab via activeFileId.
+      setActiveFileId(PLAN_FILE_ID)
+      // Reset activeFileId after a frame so subsequent clicks re-trigger if needed
+      setTimeout(() => setActiveFileId(undefined), 100)
+    } else {
+      // 'build': read the live plan content from files state
+      const planFile = files.find((f) => f.id === PLAN_FILE_ID)
+      const planContent = planFile?.content ?? ''
+
+      // Switch to Agent mode
+      setSelectedMode('Agent')
+
+      // Inject plan as context message then trigger code generation
+      const planContextMsg: Message = {
+        id: `plan-ctx-${Date.now()}`,
+        role: 'assistant',
+        content: `Approved plan:\n\n${planContent}`,
+      }
+      const confirmMsg: Message = {
+        id: `plan-confirm-${Date.now()}`,
+        role: 'assistant',
+        content: 'Plan approved. Switching to Agent mode to build this.',
+      }
+      setMessages((prev) => [...prev, planContextMsg, confirmMsg])
+
+      await generateCode(
+        `OK, let's build this. Use the approved plan above as your guide.`,
+        selectedModel,
+        'Agent'
+      )
+    }
+  }, [files, selectedModel, generateCode])
+
+  const handleDeleteFile = useCallback((fileId: string) => {
+    const removeFromTree = (items: FileItem[]): FileItem[] => {
+      return items
+        .filter((item) => item.id !== fileId)
+        .map((item) => ({
+          ...item,
+          children: item.children ? removeFromTree(item.children) : undefined,
+        }))
+    }
+    setFiles((prev) => removeFromTree(prev))
+  }, [])
+
+  const handleRenameFile = useCallback((fileId: string, newName: string) => {
+    const ext = newName.includes('.') ? newName.split('.').pop() || '' : ''
+    const renameInTree = (items: FileItem[]): FileItem[] => {
+      return items.map((item) => {
+        if (item.id === fileId) {
+          return {
+            ...item,
+            name: newName,
+            language: item.type === 'file' ? ext : item.language,
+          }
+        }
+        if (item.children) {
+          return {
+            ...item,
+            children: renameInTree(item.children),
+          }
+        }
+        return item
+      })
+    }
+    setFiles((prev) => renameInTree(prev))
+  }, [])
+
 
 
   // ── Auto-generate on URL prompt ───────────────────────────────────────────
@@ -775,10 +990,16 @@ export default function WorkspaceClient() {
       onDeploy={handleDeploy}
       onFileChange={handleFileChange}
       onCreateFile={handleCreateFile}
+      onDeleteFile={handleDeleteFile}
+      onRenameFile={handleRenameFile}
       onNewProject={handleNewProject}
       selectedModel={selectedModel}
       onModelChange={setSelectedModel}
       projectId={isSavedInDb ? projectId : undefined}
+      selectedMode={selectedMode}
+      onModeChange={setSelectedMode}
+      onPlanAction={handlePlanAction}
+      activeFileId={activeFileId}
     />
   )
 }

@@ -4,18 +4,24 @@ export interface ModelRoutingConfig {
   COMPLEX: string
 }
 
-// Default OpenRouter-only configurations
-export const TIER_STARTING_MODELS: ModelRoutingConfig = {
-  SIMPLE: 'gemini-3-flash-preview',
-  MODERATE: 'gemini-3-flash-preview',
-  COMPLEX: 'gemini-3-flash-preview',
+export const GROQ_MODELS = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3-32b',
+  'groq/compound',
+  'groq/compound-mini',
+  'moonshotai/kimi-k2-instruct',
+]
+
+export function isGroqModel(modelName: string): boolean {
+  return GROQ_MODELS.includes(modelName) || modelName.startsWith('groq/')
 }
 
-// Z.ai-specific configurations (fallback to OpenRouter free models handled transparently)
-export const ZAI_TIER_STARTING_MODELS: ModelRoutingConfig = {
-  SIMPLE: 'zai/glm-4.7-flash',
-  MODERATE: 'zai/glm-4.7',
-  COMPLEX: 'zai/glm-5.2',
+// Starting model per tier (Groq distributed for task-based load balancing)
+export const TIER_STARTING_MODELS: ModelRoutingConfig = {
+  SIMPLE: 'groq/compound-mini',
+  MODERATE: 'qwen/qwen3-32b',
+  COMPLEX: 'openai/gpt-oss-120b',
 }
 
 export const TIER_MAX_TOKENS = {
@@ -26,13 +32,13 @@ export const TIER_MAX_TOKENS = {
 
 /**
  * Returns the fallback pool of models for a given tier.
- * For MODERATE and COMPLEX requests, glm-4.7-flash is excluded entirely to avoid timeouts.
+ * Priority: Gemini (primary) -> Groq models -> OpenRouter free models -> openrouter/free (catch-all).
  */
 export function getFallbackPool(
   tier: 'SIMPLE' | 'MODERATE' | 'COMPLEX',
-  hasZaiKey: boolean
+  hasGroqKey: boolean = true
 ): string[] {
-  const openRouterPool = [
+  const baseOpenRouterPool = [
     'gemini-3-flash-preview',
     'qwen/qwen3-coder:free',
     'cohere/north-mini-code:free',
@@ -42,46 +48,50 @@ export function getFallbackPool(
     'openrouter/free',
   ]
 
-  if (!hasZaiKey) {
-    return openRouterPool
+  if (!hasGroqKey) {
+    return baseOpenRouterPool
   }
 
   switch (tier) {
     case 'SIMPLE':
       return [
         'gemini-3-flash-preview',
+        'groq/compound-mini',
+        'openai/gpt-oss-20b',
+        'qwen/qwen3-32b',
         'qwen/qwen3-coder:free',
         'cohere/north-mini-code:free',
         'poolside/laguna-xs-2.1:free',
         'poolside/laguna-m.1:free',
         'nvidia/nemotron-3-ultra-550b-a55b:free',
-        'zai/glm-4.7-flash',
-        'zai/glm-4.7',
-        'zai/glm-5.2',
         'openrouter/free',
       ]
     case 'MODERATE':
       return [
         'gemini-3-flash-preview',
+        'qwen/qwen3-32b',
+        'openai/gpt-oss-20b',
+        'openai/gpt-oss-120b',
+        'groq/compound',
         'qwen/qwen3-coder:free',
         'cohere/north-mini-code:free',
         'poolside/laguna-xs-2.1:free',
         'poolside/laguna-m.1:free',
         'nvidia/nemotron-3-ultra-550b-a55b:free',
-        'zai/glm-4.7',
-        'zai/glm-5.2',
         'openrouter/free',
       ]
     case 'COMPLEX':
       return [
         'gemini-3-flash-preview',
+        'openai/gpt-oss-120b',
+        'qwen/qwen3-32b',
+        'groq/compound',
+        'moonshotai/kimi-k2-instruct',
         'qwen/qwen3-coder:free',
         'cohere/north-mini-code:free',
         'poolside/laguna-xs-2.1:free',
         'poolside/laguna-m.1:free',
         'nvidia/nemotron-3-ultra-550b-a55b:free',
-        'zai/glm-5.2',
-        'zai/glm-4.7',
         'openrouter/free',
       ]
   }
@@ -122,7 +132,6 @@ export function classifyRequest(
   if (hasComplexKeyword || (isFreshBuild && promptLength > 150) || promptLength > 600) {
     return 'COMPLEX'
   }
-
 
   // 2. SIMPLE indicators
   const moderateKeywords = [

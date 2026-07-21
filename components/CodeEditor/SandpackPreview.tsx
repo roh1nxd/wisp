@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useSandpack } from '@codesandbox/sandpack-react'
 import { ExternalLink } from 'lucide-react'
 
@@ -8,22 +8,27 @@ interface SandpackPreviewWrapperProps {
   files: Record<string, string>
   template?: 'static' | 'react' | 'react-ts' | 'vue' | 'angular' | 'solid' | 'svelte' | 'test-ts'
   projectId?: string
+  serverUrl?: string
 }
 
 function CustomPreviewHeader({
   projectId,
+  serverUrl,
 }: {
   projectId?: string
+  serverUrl?: string
 }) {
   const handleOpenInNewTab = () => {
+    if (serverUrl) {
+      window.open(serverUrl, '_blank')
+      return
+    }
+
     if (!projectId) {
       alert('Cannot open preview: project has not been saved yet. Please generate or save the project first.')
       return
     }
 
-    // Use the app's base URL so this works in both local dev and production.
-    // NEXT_PUBLIC_APP_URL is set in .env.local (e.g. http://localhost:3000) and
-    // next.config.mjs exposes it to the client bundle.
     const base = process.env.NEXT_PUBLIC_APP_URL || window.location.origin
     const url = `${base}/api/preview/${projectId}/index.html`
     window.open(url, '_blank')
@@ -60,9 +65,10 @@ function SandpackStatusListener({
 
   const { logs } = useSandpackConsoleHook({ resetOnPreviewRestart: true })
   const processedLogsCount = useRef(0)
+  const lastLoggedMessageRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (status === 'running') {
+    if (status === 'running' || status === 'idle' || status === 'done') {
       onRunning()
     }
   }, [status, onRunning])
@@ -73,11 +79,29 @@ function SandpackStatusListener({
     // Reset reference count if preview restarted or cleared
     if (logs.length < processedLogsCount.current) {
       processedLogsCount.current = 0
+      lastLoggedMessageRef.current = null
     }
 
     if (logs.length > processedLogsCount.current) {
       for (let i = processedLogsCount.current; i < logs.length; i++) {
         const log = logs[i]
+        const rawMsg = Array.isArray(log.data)
+          ? log.data.map((d: any) => typeof d === 'string' ? d : JSON.stringify(d)).join(' ')
+          : String(log.data)
+
+        // Ignore browser extension / MetaMask noise that doesn't originate from app code
+        if (
+          rawMsg.includes('chrome-extension://') ||
+          rawMsg.includes('MetaMask') ||
+          rawMsg.includes('inpage.js')
+        ) {
+          continue
+        }
+
+        // Deduplicate rapid consecutive identical error messages to prevent log flooding
+        if (rawMsg === lastLoggedMessageRef.current) continue
+        lastLoggedMessageRef.current = rawMsg
+
         window.parent.postMessage(
           {
             type: 'console',
@@ -100,36 +124,62 @@ export default function SandpackPreviewWrapper({
   files,
   template = 'static',
   projectId,
+  serverUrl,
 }: SandpackPreviewWrapperProps) {
   const [sandpackModules, setSandpackModules] = useState<any>(null)
   const [loadError, setLoadError] = useState(false)
   const [retryKey, setRetryKey] = useState(0)
   const [previewStatus, setPreviewStatus] = useState<'loading' | 'running' | 'timeout'>('loading')
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const handleRunning = useCallback(() => {
+    if (mountedRef.current) {
+      setPreviewStatus('running')
+    }
+  }, [])
 
   // Load Sandpack dynamically to prevent compile failures if the package isn't installed
   useEffect(() => {
     import('@codesandbox/sandpack-react')
       .then((mod) => {
-        setSandpackModules(mod)
+        if (mountedRef.current) {
+          setSandpackModules(mod)
+        }
       })
       .catch(() => {
-        setLoadError(true)
+        if (mountedRef.current) {
+          setLoadError(true)
+        }
       })
   }, [])
 
-  // Auto-retry connection if it hangs in initial/loading state
+  // Auto-retry connection if it hangs in initial/loading state with a higher timeout threshold and double-mount guards
   useEffect(() => {
-    if (previewStatus === 'loading' && sandpackModules) {
-      const timer = setTimeout(() => {
-        if (retryKey < 2) {
-          console.warn(`Sandpack load timed out. Retrying... (Attempt ${retryKey + 1})`)
-          setRetryKey((prev) => prev + 1)
-        } else {
-          console.error('Sandpack load timed out after 2 retries.')
-          setPreviewStatus('timeout')
-        }
-      }, 8000)
-      return () => clearTimeout(timer)
+    if (previewStatus !== 'loading' || !sandpackModules) return
+
+    let isCancelled = false
+
+    const timer = setTimeout(() => {
+      if (isCancelled || !mountedRef.current) return
+
+      if (retryKey < 2) {
+        console.warn(`Sandpack load timed out. Retrying... (Attempt ${retryKey + 1})`)
+        setRetryKey((prev) => prev + 1)
+      } else {
+        setPreviewStatus('timeout')
+      }
+    }, 15000)
+
+    return () => {
+      isCancelled = true
+      clearTimeout(timer)
     }
   }, [retryKey, previewStatus, sandpackModules])
 
@@ -144,8 +194,47 @@ export default function SandpackPreviewWrapper({
     sanitizedFiles[path] = content || ''
   }
 
+  // Helper: check if file path exists with or without leading slash
+  const hasFile = (p: string) => !!sanitizedFiles[p] || !!sanitizedFiles[`/${p}`] || !!sanitizedFiles[p.replace(/^\//, '')]
+
+  // If React template, ensure Sandpack's required root entry file (/index.js) delegates to actual generated entry point
+  if (template === 'react' || template === 'react-ts') {
+    const hasRootIndex = hasFile('index.js') || hasFile('index.jsx') || hasFile('index.tsx') || hasFile('index.ts')
+    if (!hasRootIndex) {
+      // Find relative path to main component or entry
+      const mainPath = Object.keys(sanitizedFiles).find((p) =>
+        /src\/main\.(jsx|tsx|js|ts)$/i.test(p) || /main\.(jsx|tsx|js|ts)$/i.test(p)
+      )
+      const appPath = Object.keys(sanitizedFiles).find((p) =>
+        /src\/App\.(jsx|tsx|js|ts)$/i.test(p) || /App\.(jsx|tsx|js|ts)$/i.test(p)
+      )
+
+      if (mainPath) {
+        const relPath = mainPath.replace(/^\//, '').replace(/\.(jsx|tsx|js|ts)$/, '')
+        sanitizedFiles['/index.js'] = `import "./${relPath}";`
+      } else if (appPath) {
+        const relPath = appPath.replace(/^\//, '').replace(/\.(jsx|tsx|js|ts)$/, '')
+        sanitizedFiles['/index.js'] = `import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./${relPath}";
+
+const rootEl = document.getElementById("root") || document.getElementById("app") || document.body;
+if (rootEl) {
+  let container = document.getElementById("root");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "root";
+    document.body.appendChild(container);
+  }
+  const root = ReactDOM.createRoot(container);
+  root.render(<App />);
+}`
+      }
+    }
+  }
+
   // If static template, ensure we have at least an index.html at root
-  if (template === 'static' && !sanitizedFiles['/index.html'] && !sanitizedFiles['index.html']) {
+  if (template === 'static' && !hasFile('index.html')) {
     sanitizedFiles['/index.html'] = `<!DOCTYPE html>
 <html>
 <head>
@@ -203,7 +292,7 @@ export default function SandpackPreviewWrapper({
             </svg>
           </div>
           <div className="flex flex-col gap-1.5 max-w-sm">
-            <p className="text-sm font-semibold text-[var(--text-primary)] font-sans">Connection Timeout</p>
+            <p className="text-sm font-semibold text-[var(--text-primary)] font-sans">Preview unavailable — retry</p>
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
               The live preview server is taking too long to connect. You can retry the connection or open the preview in a standalone tab.
             </p>
@@ -242,9 +331,9 @@ export default function SandpackPreviewWrapper({
         <SandpackStatusListener
           useSandpackHook={useSandpack}
           useSandpackConsoleHook={useSandpackConsole}
-          onRunning={() => setPreviewStatus('running')}
+          onRunning={handleRunning}
         />
-        <CustomPreviewHeader projectId={projectId} />
+        <CustomPreviewHeader projectId={projectId} serverUrl={serverUrl} />
         <div className="flex-1 relative min-h-0 flex flex-col bg-[var(--bg-page)]">
           <SandpackLayout
             style={{ height: '100%', flex: 1, minHeight: 0, border: 0, borderRadius: 0 }}

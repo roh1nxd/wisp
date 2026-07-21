@@ -87,8 +87,19 @@ export async function GET(
     }
 
     const mimeType = getMimeType(cleanRequestedPath)
+    let content = file.content
 
-    return new NextResponse(file.content, {
+    // If serving HTML, inject Babel Standalone script tag if JSX/TSX is referenced so browsers can render JSX in standalone tabs
+    if (cleanRequestedPath.endsWith('.html') && (content.includes('.jsx') || content.includes('.tsx') || content.includes('react'))) {
+      if (!content.includes('babel.min.js')) {
+        const babelScript = `<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>\n`
+        content = content.replace(/<head>/i, `<head>\n  ${babelScript}`)
+      }
+      // Change script type="module" targeting .jsx/.tsx to type="text/babel"
+      content = content.replace(/type="module"\s+src="([^"]+\.[jt]sx?)"/gi, 'type="text/babel" data-type="module" src="$1"')
+    }
+
+    return new NextResponse(content, {
       status: 200,
       headers: {
         'Content-Type': mimeType,

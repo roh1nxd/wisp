@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { TIER_STARTING_MODELS, ZAI_TIER_STARTING_MODELS, classifyRequest, TIER_MAX_TOKENS, getFallbackPool } from '@/lib/modelRouting'
+import { TIER_STARTING_MODELS, classifyRequest, TIER_MAX_TOKENS, getFallbackPool, isGroqModel } from '@/lib/modelRouting'
 import prisma from '@/lib/prisma'
 import {
   classifyGenerationMode,
@@ -8,6 +8,51 @@ import {
   buildWebAppPrompt,
 } from '@/lib/contractSystemPrompt'
 import { GoogleGenAI } from '@google/genai'
+
+// ---------------------------------------------------------------------------
+// Plan / Agent mode system-prompt appendices
+// ---------------------------------------------------------------------------
+
+const PLAN_MODE_INSTRUCTION = `
+You are in PLAN mode. Produce a complete PRD, technical architecture, and a phased roadmap from v0 (current draft) to v1 (working MVP) for what the user is asking. Structure the output in clean markdown with headers: ## Overview, ## Core Entities, ## User Roles, ## Features (v0 vs v1), ## Architecture, ## Roadmap (v0 to v1 steps), ## Open Questions. Everything described must be technically workable, not aspirational. Do not write implementation code in this mode — only the plan.
+
+CRITICAL INSTRUCTION:
+Do NOT output JSON. Do NOT wrap your response in a JSON object, code block, or files array. Output ONLY raw markdown text starting directly with ## Overview.`
+
+const AGENT_MODE_INSTRUCTION = `
+You are in AGENT mode. You have an approved plan (see context). Implement it step by step, writing real working code. Select model tier based on task complexity using the existing model routing system — do not always use the same model for every step. Do NOT include plan.md in the files array — only return implementation code files.`
+
+export function extractPlanMarkdown(raw: string): string {
+  if (!raw) return ''
+  const trimmed = raw.trim()
+
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed) {
+        if (Array.isArray(parsed.files) && parsed.files.length > 0) {
+          const planFile = parsed.files.find(
+            (f: any) => f.path && (f.path.toLowerCase() === 'plan.md' || f.path.toLowerCase().endsWith('/plan.md'))
+          ) || parsed.files[0]
+          if (planFile && typeof planFile.content === 'string') {
+            return extractPlanMarkdown(planFile.content)
+          }
+        }
+        const candidate = parsed.planContent || parsed.content || parsed.plan || parsed.markdown || parsed.summary
+        if (typeof candidate === 'string') {
+          return extractPlanMarkdown(candidate)
+        }
+      }
+    } catch {}
+  }
+
+  const fenceMatch = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
+  if (fenceMatch) {
+    return fenceMatch[1].trim()
+  }
+
+  return trimmed
+}
 
 
 
@@ -60,6 +105,7 @@ export async function POST(req: NextRequest) {
       model = 'poolside/laguna-m.1:free',
       projectId,
       userId,
+      mode = 'Agent', // 'Plan' | 'Agent'
     } = body
 
     if (!prompt) {
@@ -100,12 +146,21 @@ The user's new instruction should be applied as an edit or addition to this exis
     }
 
     let systemPrompt: string
-    if (generationMode === 'SOROBAN_CONTRACT') {
+    if (mode === 'Plan') {
+      systemPrompt = PLAN_MODE_INSTRUCTION
+      if (projectStatePrompt) {
+        systemPrompt += `\n\nExisting project context:\n${projectStatePrompt}`
+      }
+    } else if (generationMode === 'SOROBAN_CONTRACT') {
       systemPrompt = buildContractOnlyPrompt(prompt, currentFiles, projectStatePrompt)
     } else if (generationMode === 'FULL_DAPP') {
       systemPrompt = buildFullDappPrompt(prompt, currentFiles, projectStatePrompt)
     } else {
       systemPrompt = buildWebAppPrompt(projectStatePrompt)
+    }
+
+    if (mode === 'Agent') {
+      systemPrompt += '\n\n' + AGENT_MODE_INSTRUCTION
     }
 
     // 1. Fetch preceding context (last 20 messages) from database if projectId is set
@@ -154,25 +209,21 @@ The user's new instruction should be applied as an edit or addition to this exis
     }
     conversationMessages.push({ role: 'user', content: prompt })
 
-    const rawZaiKey = process.env.ZAI_API_KEY || ''
-    const hasZaiKey = !!rawZaiKey.trim()
-    console.log(`[DEBUG - API] ZAI_API_KEY read check: present = ${hasZaiKey}, length = ${rawZaiKey.length}`)
-    const rawZaiBase = process.env.ZAI_BASE_URL || ''
-    console.log(`[DEBUG - API] ZAI_BASE_URL read check: present = ${!!rawZaiBase.trim()}, value = "${rawZaiBase}"`)
+    const rawGroqKey = process.env.GROQ_API_KEY || ''
+    const hasGroqKey = !!rawGroqKey.trim()
+    console.log(`[DEBUG - API] GROQ_API_KEY read check: present = ${hasGroqKey}, length = ${rawGroqKey.length}`)
 
     const tier = classifyRequest(prompt, currentFiles, isRestart)
-    console.log(`[DEBUG - API] Classified prompt tier: ${tier} | Z.ai enabled: ${hasZaiKey}`)
+    console.log(`[DEBUG - API] Classified prompt tier: ${tier} | Groq enabled: ${hasGroqKey}`)
     
-    // Choose starting model based on whether Z.ai key is configured
-    const routingConfig = hasZaiKey ? ZAI_TIER_STARTING_MODELS : TIER_STARTING_MODELS
-    const classifiedStartModel = routingConfig[tier]
+    const classifiedStartModel = TIER_STARTING_MODELS[tier]
 
     // If request model is 'openrouter/free' (Auto), use the classified starting model.
     // Otherwise, respect user's manual selection.
     const initialModel = model === 'openrouter/free' ? classifiedStartModel : model
 
-    // Build the dynamic fallback pool (only include Z.ai models if ZAI_API_KEY is configured)
-    const fallbackPool = getFallbackPool(tier, hasZaiKey)
+    // Build the dynamic fallback pool (include Groq models if GROQ_API_KEY is configured)
+    const fallbackPool = getFallbackPool(tier, hasGroqKey)
 
     const modelsToTry = [initialModel]
     for (const m of fallbackPool) {
@@ -266,7 +317,8 @@ The user's new instruction should be applied as an edit or addition to this exis
               config: {
                 systemInstruction: systemPrompt,
                 temperature: 0.3,
-                responseMimeType: 'application/json',
+                // In Plan mode we want plain markdown, not forced JSON
+                ...(mode !== 'Plan' ? { responseMimeType: 'application/json' } : {}),
               }
             })
 
@@ -297,6 +349,15 @@ The user's new instruction should be applied as an edit or addition to this exis
               break // Move to next model
             }
 
+            // In Plan mode, return clean markdown — extract if JSON wrapper was returned
+            if (mode === 'Plan') {
+              successData = { planContent: extractPlanMarkdown(rawText) }
+              modelUsed = currentModel
+              console.log(`[DEBUG - ATTEMPT SUCCESS] Model: ${currentModel} succeeded (Plan mode).`)
+              clearTimeout(timeoutId)
+              break
+            }
+
             let parsedJSON: any = null
             try {
               parsedJSON = extractJSON(rawText)
@@ -322,6 +383,23 @@ The user's new instruction should be applied as an edit or addition to this exis
             break // Exit retry loop
           }
 
+          const isGroq = isGroqModel(currentModel)
+          const groqKey = (process.env.GROQ_API_KEY || '').trim()
+
+          if (isGroq && !groqKey) {
+            console.warn(`[AI Fallback] Skipping Groq model ${currentModel} - GROQ_API_KEY not configured.`)
+            lastError = 'Groq API key is missing'
+            lastStatus = 401
+            attemptLogs.push({
+              model: currentModel,
+              status: 401,
+              error: lastError,
+              type: 'http_error',
+            })
+            clearTimeout(timeoutId)
+            break // Move to next model
+          }
+
           const isZai = currentModel.startsWith('zai/')
           const zaiKey = (process.env.ZAI_API_KEY || '').trim()
 
@@ -339,11 +417,15 @@ The user's new instruction should be applied as an edit or addition to this exis
             break // Move to next model
           }
 
-          const endpoint = isZai
+          const endpoint = isGroq
+            ? 'https://api.groq.com/openai/v1/chat/completions'
+            : isZai
             ? `${(process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4').trim()}/chat/completions`
             : 'https://openrouter.ai/api/v1/chat/completions'
 
-          const authHeader = isZai
+          const authHeader = isGroq
+            ? `Bearer ${groqKey}`
+            : isZai
             ? `Bearer ${zaiKey}`
             : `Bearer ${key}`
 
@@ -352,7 +434,7 @@ The user's new instruction should be applied as an edit or addition to this exis
             Authorization: authHeader,
           }
 
-          if (!isZai) {
+          if (!isZai && !isGroq) {
             requestHeaders['HTTP-Referer'] = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
             requestHeaders['X-Title'] = 'Wisp Workspace Builder'
           }
@@ -426,6 +508,15 @@ The user's new instruction should be applied as an edit or addition to this exis
             break
           }
 
+          // In Plan mode, return clean markdown — extract if JSON wrapper was returned
+          if (mode === 'Plan') {
+            successData = { planContent: extractPlanMarkdown(rawText) }
+            modelUsed = currentModel
+            console.log(`[DEBUG - ATTEMPT SUCCESS] Model: ${currentModel} succeeded (Plan mode).`)
+            clearTimeout(timeoutId)
+            break
+          }
+
           let parsedJSON: any = null
           try {
             parsedJSON = extractJSON(rawText)
@@ -491,6 +582,32 @@ The user's new instruction should be applied as an edit or addition to this exis
     }
 
     if (successData) {
+      // ── Plan mode: return raw markdown content ────────────────────────────
+      if (mode === 'Plan' && successData.planContent) {
+        // Optionally save a short confirmation to DB chat history
+        if (projectId) {
+          const projectExists = await prisma.project.findUnique({ where: { id: projectId } })
+          if (projectExists) {
+            try {
+              await prisma.chatMessage.create({
+                data: {
+                  projectId,
+                  role: 'assistant',
+                  content: '[Plan generated — see plan card in chat]'
+                }
+              })
+            } catch (dbErr) {
+              console.error('[API - Generate] Failed to save plan confirmation to database:', dbErr)
+            }
+          }
+        }
+        return NextResponse.json({
+          planContent: successData.planContent,
+          modelUsed,
+        })
+      }
+
+      // ── Normal (Agent/code) mode ──────────────────────────────────────────
       const summaryText = successData.summary || `Generated ${successData.files?.length || 0} file(s).`
       const doneContent = `Done! Here's your ${summaryText}`
 

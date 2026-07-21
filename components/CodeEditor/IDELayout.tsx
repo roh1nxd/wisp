@@ -2,17 +2,20 @@
 
 import { useState, useMemo, useEffect } from 'react'
 import dynamic from 'next/dynamic'
-import { Folder, MessageSquare, Terminal, Rocket, Play, RefreshCw } from 'lucide-react'
+import { Folder, MessageSquare, Terminal, Rocket, Play, RefreshCw, Code, Eye } from 'lucide-react'
 import { StatusBar } from './StatusBar'
 import { FileExplorer, FileItem } from './FileExplorer'
 import { TabBar, TabItem } from './TabBar'
 import { Breadcrumb } from './Breadcrumb'
 import { CodeEditor } from './CodeEditor'
-import { ChatPanel, Message } from './ChatPanel'
+import { MarkdownPreview } from './MarkdownPreview'
+import { ChatPanel, Message, ChatMode } from './ChatPanel'
 import { Preview } from './Preview'
+import { TerminalPanel } from './TerminalPanel'
 import { Dock } from '@/components/dock'
 import { cn } from '@/lib/utils'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
+import { mountWebContainerFiles, syncFileToWebContainer, deleteFileFromWebContainer, isNodeFrameworkProject } from '@/lib/webcontainer'
 
 // Dynamically import SandpackPreviewWrapper with SSR disabled to prevent hydration/compilation issues on non-installed/server setups
 const SandpackPreviewComponent = dynamic(
@@ -30,7 +33,7 @@ interface OutputLine {
 interface IDELayoutProps {
   files?: FileItem[]
   initialMessages?: Message[]
-  onSendMessage?: (message: string, model?: string) => void
+  onSendMessage?: (message: string, model?: string, mode?: string) => void
   onDeploy?: () => void
   onNewProject?: () => void
   status?: 'draft' | 'unaudited' | 'deployed'
@@ -42,6 +45,12 @@ interface IDELayoutProps {
   selectedModel?: string
   onModelChange?: (model: string) => void
   projectId?: string
+  selectedMode?: ChatMode
+  onModeChange?: (mode: ChatMode) => void
+  onPlanAction?: (planPath: string, action: 'edit' | 'build') => void
+  activeFileId?: string
+  onDeleteFile?: (fileId: string) => void
+  onRenameFile?: (fileId: string, newName: string) => void
 }
 
 // Flatten nested file structure into simple Record<string, string> paths for Sandpack
@@ -140,9 +149,40 @@ export function IDELayout({
   selectedModel,
   onModelChange,
   projectId,
+  selectedMode,
+  onModeChange,
+  onPlanAction,
+  activeFileId,
+  onDeleteFile,
+  onRenameFile,
 }: IDELayoutProps) {
   const [selectedFileId, setSelectedFileId] = useState<string>()
   const [openTabs, setOpenTabs] = useState<Set<string>>(new Set())
+  const [webContainerServerUrl, setWebContainerServerUrl] = useState<string | null>(null)
+  const [activePanel, setActivePanel] = useState<'code' | 'preview'>('code')
+
+  const nodeInfo = useMemo(() => isNodeFrameworkProject(files), [files])
+
+  // Mount files into WebContainer when Node framework project is loaded
+  useEffect(() => {
+    if (nodeInfo.isNode && files.length > 0) {
+      mountWebContainerFiles(files)
+    }
+  }, [nodeInfo.isNode, files])
+
+  const handleDeleteFileTabSync = (fileId: string) => {
+    handleCloseTab(fileId)
+    deleteFileFromWebContainer(fileId)
+    onDeleteFile?.(fileId)
+  }
+
+  // Sync external activeFileId request (e.g. from clicking Edit on a plan card)
+  useEffect(() => {
+    if (activeFileId) {
+      setSelectedFileId(activeFileId)
+      setOpenTabs((prev) => new Set([...prev, activeFileId]))
+    }
+  }, [activeFileId])
   const [previewExpanded, setPreviewExpanded] = useState(true)
   const [outputLines, setOutputLines] = useState<OutputLine[]>(output)
   const [isRunningCode, setIsRunningCode] = useState(false)
@@ -473,39 +513,11 @@ export function IDELayout({
         {
           id: 'term-init',
           type: 'info',
-          message: '⚙️ Initializing Node.js workspace...',
+          message: '🚀 Live Preview active — rendering React application via Sandpack browser sandbox.',
           timestamp: new Date(),
         }
       ])
-
-      const steps = [
-        { delay: 400, type: 'info', message: '📦 Resolving project dependencies from package.json...' },
-        { delay: 800, type: 'log', message: '$ npm install --prefer-offline --no-audit' },
-        { delay: 1300, type: 'info', message: '  + react@19.0.0\n  + react-dom@19.0.0\n  added packages successfully' },
-        { delay: 1700, type: 'log', message: '$ npm run dev' },
-        { delay: 2000, type: 'info', message: '🚀 ready - started local dev server on http://localhost:3000' },
-      ]
-
-      const timers: NodeJS.Timeout[] = []
-
-      steps.forEach((step) => {
-        const timer = setTimeout(() => {
-          setOutputLines((prev) => [
-            ...prev,
-            {
-              id: `term-step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              type: step.type as any,
-              message: step.message,
-              timestamp: new Date(),
-            }
-          ])
-        }, step.delay)
-        timers.push(timer)
-      })
-
-      return () => {
-        timers.forEach((t) => clearTimeout(t))
-      }
+      return
     }
 
     // Default: Soroban/Rust smart contract project
@@ -641,7 +653,7 @@ export function IDELayout({
   }
 
   const handleRunCode = async () => {
-    if (!selectedFile || isRunningCode) return
+    if (!selectedFile || isRunningCode || selectedFile.name.endsWith('.md')) return
 
     setIsRunningCode(true)
     setPreviewExpanded(true)
@@ -923,129 +935,192 @@ export function IDELayout({
                   onSelectFile={handleSelectFile}
                   selectedFileId={selectedFileId}
                   onCreateFile={onCreateFile}
+                  onDeleteFile={handleDeleteFileTabSync}
+                  onRenameFile={onRenameFile}
                 />
               </Panel>
               <PanelResizeHandle className="w-1 hover:bg-[var(--accent)]/55 bg-[var(--border-default)]/45 transition-colors cursor-col-resize shrink-0 z-30" />
             </>
           )}
 
-          {/* Center Pane - Split vertically between Editors (top) and Terminal (bottom) */}
+          {/* Center Pane - Toggleable between Code and Preview */}
           <Panel className="flex-grow flex flex-col min-w-0 bg-[var(--bg-page)] h-full">
             {isLoading ? (
               <div className="flex-grow relative h-full">
                 <LoadingSkeleton />
               </div>
             ) : (
-              <PanelGroup direction="vertical" className="h-full w-full">
-                {/* Top Section: Code Editor and Live Preview (Horizontal Split) */}
-                <Panel defaultSize={previewExpanded ? 65 : 100} minSize={30} className="flex flex-col min-h-0">
-                  <PanelGroup direction="horizontal" className="h-full w-full" id="editor-preview-group">
-                    {/* Left Column - Code Editor */}
-                    <Panel
-                      id="code-editor-panel"
-                      order={1}
-                      defaultSize={50}
-                      minSize={25}
-                      className="flex flex-col h-full min-w-0"
-                    >
-                      <TabBar
-                        tabs={tabs}
-                        onSelectTab={handleSelectTab}
-                        onCloseTab={handleCloseTab}
-                      />
-                      {selectedFile && (
-                        <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--border-default)] bg-[var(--bg-surface)] text-xs select-none shrink-0">
-                          <Breadcrumb path={breadcrumbPath} />
-                          {!isWeb && (
-                            <button
-                              onClick={handleRunCode}
-                              disabled={isRunningCode}
-                              className={cn(
-                                "inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer shadow-2xs border",
-                                isRunningCode
-                                  ? "bg-[var(--bg-elevated)] border-[var(--border-strong)] text-[var(--text-secondary)]"
-                                  : "bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-text-on)] border-[var(--accent)]"
-                              )}
-                            >
-                              {isRunningCode ? (
-                                <>
-                                  <RefreshCw className="h-3 w-3 animate-spin" />
-                                  Running...
-                                </>
-                              ) : (
-                                <>
-                                  <Play className="h-3 w-3 fill-current" />
-                                  Run Code
-                                </>
-                              )}
-                            </button>
-                          )}
-                        </div>
+              <div className="flex flex-col h-full w-full min-h-0">
+                {/* Top Toggle Bar */}
+                <div className="h-10 border-b border-[var(--border-default)] bg-[var(--bg-surface)] flex items-center justify-between px-4 shrink-0 select-none z-20">
+                  <div className="flex items-center gap-1 bg-[var(--bg-page)] p-1 rounded-lg border border-[var(--border-default)]">
+                    <button
+                      onClick={() => setActivePanel('code')}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 cursor-pointer select-none",
+                        activePanel === 'code'
+                          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow-2xs font-semibold border border-[var(--border-strong)]"
+                          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-transparent"
                       )}
-                      <div className="flex-1 overflow-hidden relative min-h-0">
-                        {selectedFile ? (
-                          <CodeEditor
-                            fileName={selectedFile.name}
-                            content={selectedFile.content || ''}
-                            readOnly={false}
-                            onChange={(val) => onFileChange?.(selectedFileId!, val)}
-                          />
-                        ) : (
-                          <div className="flex h-full items-center justify-center text-center p-8 bg-[var(--bg-page)] select-none animate-in fade-in duration-300">
-                            <div className="max-w-sm flex flex-col items-center gap-5">
-                              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/10 text-[var(--accent)] shadow-xs">
-                                <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                                </svg>
-                              </div>
-                              <div className="flex flex-col gap-2">
-                                <h3 className="text-base font-bold tracking-tight text-[var(--text-primary)] font-sans">No file selected</h3>
-                                <p className="text-xs text-[var(--text-secondary)] leading-relaxed max-w-[240px]">
-                                  Select a file from the explorer sidebar or use the <span className="text-[var(--accent)] font-semibold">+</span> button to create one.
-                                </p>
-                              </div>
-                            </div>
+                    >
+                      <Code className="h-3.5 w-3.5 text-[var(--accent)]" />
+                      <span>Code</span>
+                    </button>
+                    <button
+                      onClick={() => setActivePanel('preview')}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 cursor-pointer select-none",
+                        activePanel === 'preview'
+                          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow-2xs font-semibold border border-[var(--border-strong)]"
+                          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-transparent"
+                      )}
+                    >
+                      <Eye className="h-3.5 w-3.5 text-[var(--accent)]" />
+                      <span>Preview</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Code View (Editor Panel + Output Console / Terminal) */}
+                <div className={cn("flex-1 min-h-0 h-full w-full flex flex-col", activePanel !== 'code' && "hidden")}>
+                  <PanelGroup direction="vertical" className="h-full w-full">
+                    {/* Top Section: Code Editor Panel */}
+                    <Panel defaultSize={previewExpanded ? 65 : 100} minSize={30} className="flex flex-col min-h-0">
+                      <div className="flex flex-col h-full min-w-0">
+                        <TabBar
+                          tabs={tabs}
+                          onSelectTab={handleSelectTab}
+                          onCloseTab={handleCloseTab}
+                        />
+                        {selectedFile && (
+                          <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--border-default)] bg-[var(--bg-surface)] text-xs select-none shrink-0">
+                            <Breadcrumb path={breadcrumbPath} />
+                            {!isWeb && selectedFile && !selectedFile.name.endsWith('.md') && (
+                              <button
+                                onClick={handleRunCode}
+                                disabled={isRunningCode}
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer shadow-2xs border",
+                                  isRunningCode
+                                    ? "bg-[var(--bg-elevated)] border-[var(--border-strong)] text-[var(--text-secondary)]"
+                                    : "bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-text-on)] border-[var(--accent)]"
+                                )}
+                              >
+                                {isRunningCode ? (
+                                  <>
+                                    <RefreshCw className="h-3 w-3 animate-spin" />
+                                    Running...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="h-3 w-3 fill-current" />
+                                    Run Code
+                                  </>
+                                )}
+                              </button>
+                            )}
                           </div>
                         )}
+                        <div className="flex-1 overflow-hidden relative min-h-0">
+                          {selectedFile ? (
+                            selectedFile.name.endsWith('.md') ? (
+                              <MarkdownPreview
+                                content={selectedFile.content || ''}
+                                onChange={(val) => onFileChange?.(selectedFileId!, val)}
+                                readOnly={false}
+                              />
+                            ) : (
+                              <CodeEditor
+                                fileName={selectedFile.name}
+                                content={selectedFile.content || ''}
+                                readOnly={false}
+                                onChange={(val) => {
+                                  onFileChange?.(selectedFileId!, val)
+                                  if (nodeInfo.isNode && selectedFile) {
+                                    syncFileToWebContainer(selectedFile.name, val)
+                                  }
+                                }}
+                              />
+                            )
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-center p-8 bg-[var(--bg-page)] select-none animate-in fade-in duration-300">
+                              <div className="max-w-sm flex flex-col items-center gap-5">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/10 text-[var(--accent)] shadow-xs">
+                                  <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                                  </svg>
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                  <h3 className="text-base font-bold tracking-tight text-[var(--text-primary)] font-sans">No file selected</h3>
+                                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed max-w-[240px]">
+                                    Select a file from the explorer sidebar or use the <span className="text-[var(--accent)] font-semibold">+</span> button to create one.
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </Panel>
 
-                    {/* Right Column - Web Live Preview (only for Web projects) */}
-                    {isWeb && (
+                    {/* Bottom Section: Terminal Console */}
+                    {previewExpanded && (
                       <>
-                        <PanelResizeHandle className="w-1 hover:bg-[var(--accent)]/55 bg-[var(--border-default)]/45 transition-colors cursor-col-resize shrink-0 z-30" />
-                        <Panel
-                          id="live-preview-panel"
-                          order={2}
-                          defaultSize={50}
-                          minSize={20}
-                          className="flex flex-col h-full bg-[var(--bg-page)] overflow-hidden relative"
-                        >
-                          <div className="flex-1 overflow-hidden h-full">
-                            <SandpackPreviewComponent files={flatFiles} template={webTemplate} projectId={projectId} />
-                          </div>
+                        <PanelResizeHandle className="h-1 hover:bg-[var(--accent)]/55 bg-[var(--border-default)]/45 transition-colors cursor-row-resize shrink-0 z-30" />
+                        <Panel defaultSize={35} minSize={15} className="flex flex-col min-h-0 border-t border-[var(--border-default)]">
+                          {nodeInfo.isNode ? (
+                            <TerminalPanel
+                              files={files}
+                              isExpanded={previewExpanded}
+                              onToggleExpand={setPreviewExpanded}
+                              onServerReady={setWebContainerServerUrl}
+                            />
+                          ) : (
+                            <Preview
+                              output={outputLines}
+                              onClear={() => setOutputLines([])}
+                              isExpanded={previewExpanded}
+                              onToggleExpand={setPreviewExpanded}
+                              onExecuteCommand={handleExecuteCommand}
+                            />
+                          )}
                         </Panel>
                       </>
                     )}
                   </PanelGroup>
-                </Panel>
+                </div>
 
-                {/* Bottom Section: Terminal Console (spans full width under code editor and preview) */}
-                {previewExpanded && (
-                  <>
-                    <PanelResizeHandle className="h-1 hover:bg-[var(--accent)]/55 bg-[var(--border-default)]/45 transition-colors cursor-row-resize shrink-0 z-30" />
-                    <Panel defaultSize={35} minSize={15} className="flex flex-col min-h-0 border-t border-[var(--border-default)]">
-                      <Preview
-                        output={outputLines}
-                        onClear={() => setOutputLines([])}
-                        isExpanded={previewExpanded}
-                        onToggleExpand={setPreviewExpanded}
-                        onExecuteCommand={handleExecuteCommand}
-                      />
-                    </Panel>
-                  </>
-                )}
-              </PanelGroup>
+                {/* Preview View (Live Preview Panel) */}
+                <div className={cn("flex-1 min-h-0 h-full w-full flex flex-col bg-[var(--bg-page)] overflow-hidden relative", activePanel !== 'preview' && "hidden")}>
+                  <div className="flex-1 overflow-hidden h-full">
+                    {webContainerServerUrl ? (
+                      <div className="flex flex-col h-full bg-[var(--bg-page)]">
+                        <div className="h-9 border-b border-[var(--border-default)] bg-[var(--bg-surface)] flex items-center justify-between px-4 shrink-0 select-none">
+                          <span className="text-xs font-bold text-[var(--text-primary)] font-sans flex items-center gap-2">
+                            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                            WebContainer Live Preview ({nodeInfo.framework.toUpperCase()})
+                          </span>
+                          <a
+                            href={webContainerServerUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 bg-transparent hover:bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-[var(--border-strong)] px-2 py-1 rounded text-3xs font-mono font-bold uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shadow-3xs"
+                          >
+                            Open Tab
+                          </a>
+                        </div>
+                        <iframe
+                          src={webContainerServerUrl}
+                          className="w-full h-full border-none bg-white flex-1"
+                          title="WebContainer Dev Server Preview"
+                        />
+                      </div>
+                    ) : (
+                      <SandpackPreviewComponent files={flatFiles} template={webTemplate} projectId={projectId} serverUrl={webContainerServerUrl || undefined} />
+                    )}
+                  </div>
+                </div>
+              </div>
             )}
           </Panel>
 
@@ -1062,6 +1137,9 @@ export function IDELayout({
                   onNewProject={onNewProject}
                   selectedModel={selectedModel}
                   onModelChange={onModelChange}
+                  selectedMode={selectedMode}
+                  onModeChange={onModeChange}
+                  onPlanAction={onPlanAction}
                 />
               </Panel>
             </>
