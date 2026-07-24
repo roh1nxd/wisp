@@ -1,22 +1,35 @@
-import { readFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, rmSync } from 'fs'
 import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { execSync } from 'child_process'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
-// Auto extract the zip on start
+// Remove legacy keyless .clerk directory if it exists to prevent credentials conflict
 try {
-  const zipPath = 'C:\\Users\\Rohan Verma\\OneDrive\\Desktop\\code-interface-redesign (1).zip'
-  const destPath = join(__dir, 'temp_unzip')
-  if (existsSync(zipPath) && !existsSync(destPath)) {
-    mkdirSync(destPath, { recursive: true })
-    console.log(`[STARTUP] Extracting components from ${zipPath}...`)
-    execSync(`powershell.exe -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destPath}' -Force"`, { stdio: 'inherit' })
-    console.log(`[STARTUP] Extraction complete!`)
+  const clerkDir = join(__dir, '.clerk')
+  if (existsSync(clerkDir)) {
+    rmSync(clerkDir, { recursive: true, force: true })
+    console.log('[STARTUP] Cleaned up legacy .clerk folder to prevent credentials conflict.')
   }
-} catch (error) {
-  console.error('[STARTUP] Zip extraction failed:', error)
+} catch (e) {
+  console.error('[STARTUP] Failed to remove .clerk folder:', e)
+}
+
+// Auto extract the zip on start (dev only)
+if (process.env.NODE_ENV === 'development') {
+  try {
+    const zipPath = join(__dir, 'temp_unzip', 'code-interface-redesign.zip')
+    const destPath = join(__dir, 'temp_unzip')
+    if (existsSync(zipPath) && !existsSync(join(destPath, 'extracted'))) {
+      mkdirSync(destPath, { recursive: true })
+      console.log(`[STARTUP] Extracting components from ${zipPath}...`)
+      execSync(`powershell.exe -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destPath}' -Force"`, { stdio: 'inherit' })
+      console.log(`[STARTUP] Extraction complete!`)
+    }
+  } catch (error) {
+    console.error('[STARTUP] Zip extraction failed:', error)
+  }
 }
 
 
@@ -64,15 +77,36 @@ const nextConfig = {
   async headers() {
     return [
       {
-        source: '/workspace',
+        source: '/workspace(.*)',
         headers: [
           {
             key: 'Cross-Origin-Embedder-Policy',
-            value: 'require-corp',
+            value: 'credentialless',
           },
           {
             key: 'Cross-Origin-Opener-Policy',
             value: 'same-origin',
+          },
+          {
+            key: 'Cross-Origin-Resource-Policy',
+            value: 'cross-origin',
+          },
+        ],
+      },
+      {
+        source: '/api/preview/:path*',
+        headers: [
+          {
+            key: 'Cross-Origin-Embedder-Policy',
+            value: 'credentialless',
+          },
+          {
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin',
+          },
+          {
+            key: 'Cross-Origin-Resource-Policy',
+            value: 'cross-origin',
           },
         ],
       },

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import { Folder, MessageSquare, Terminal, Rocket, Play, RefreshCw, Code, Eye } from 'lucide-react'
 import { StatusBar } from './StatusBar'
@@ -17,11 +17,8 @@ import { cn } from '@/lib/utils'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
 import { mountWebContainerFiles, syncFileToWebContainer, deleteFileFromWebContainer, isNodeFrameworkProject } from '@/lib/webcontainer'
 
-// Dynamically import SandpackPreviewWrapper with SSR disabled to prevent hydration/compilation issues on non-installed/server setups
-const SandpackPreviewComponent = dynamic(
-  () => import('./SandpackPreview'),
-  { ssr: false }
-)
+import { DirectStaticPreview } from './DirectStaticPreview'
+import { StorageWarning } from './StorageWarning'
 
 interface OutputLine {
   id: string
@@ -51,6 +48,7 @@ interface IDELayoutProps {
   activeFileId?: string
   onDeleteFile?: (fileId: string) => void
   onRenameFile?: (fileId: string, newName: string) => void
+  onFsChange?: () => void
 }
 
 // Flatten nested file structure into simple Record<string, string> paths for Sandpack
@@ -97,7 +95,8 @@ function getSandpackTemplate(flatFiles: Record<string, string>): 'static' | 'rea
   return 'static'
 }
 
-function LoadingSkeleton() {
+function LoadingSkeleton({ mode }: { mode?: 'Plan' | 'Agent' }) {
+  const label = mode === 'Plan' ? 'Generating plan (PRD & roadmap)...' : 'Generating code…'
   return (
     <div className="flex flex-col h-full bg-[var(--bg-page)] text-[var(--text-secondary)] p-6 gap-5 animate-pulse">
       {/* Fake tab bar */}
@@ -127,7 +126,7 @@ function LoadingSkeleton() {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
           </svg>
-          <span className="font-sans font-medium tracking-tight">Generating code…</span>
+          <span className="font-sans font-medium tracking-tight">{label}</span>
         </div>
       </div>
     </div>
@@ -142,6 +141,7 @@ export function IDELayout({
   onNewProject,
   status = 'draft',
   isLoading = false,
+  onStop,
   output = [],
   onFileChange,
   onCreateFile,
@@ -155,25 +155,61 @@ export function IDELayout({
   activeFileId,
   onDeleteFile,
   onRenameFile,
+  onFsChange,
 }: IDELayoutProps) {
   const [selectedFileId, setSelectedFileId] = useState<string>()
   const [openTabs, setOpenTabs] = useState<Set<string>>(new Set())
   const [webContainerServerUrl, setWebContainerServerUrl] = useState<string | null>(null)
   const [activePanel, setActivePanel] = useState<'code' | 'preview'>('code')
+  const [showStorageNotice, setShowStorageNotice] = useState(false)
 
   const nodeInfo = useMemo(() => isNodeFrameworkProject(files), [files])
 
-  // Mount files into WebContainer when Node framework project is loaded
+  const hasMountedWebContainerRef = useRef(false)
+
+  // Mount files into WebContainer ONLY ONCE when project is first loaded
   useEffect(() => {
-    if (nodeInfo.isNode && files.length > 0) {
+    if (files.length > 0 && !hasMountedWebContainerRef.current) {
+      hasMountedWebContainerRef.current = true
       mountWebContainerFiles(files)
     }
-  }, [nodeInfo.isNode, files])
+  }, [files])
 
   const handleDeleteFileTabSync = (fileId: string) => {
     handleCloseTab(fileId)
     deleteFileFromWebContainer(fileId)
     onDeleteFile?.(fileId)
+  }
+
+  const handleOpenFileByPath = (path: string) => {
+    if (!path) return
+    const cleanPath = path.replace(/^\//, '')
+    const findFile = (items: FileItem[]): FileItem | undefined => {
+      for (const item of items) {
+        if (
+          item.id === path ||
+          item.name === cleanPath ||
+          item.name === path ||
+          item.id === cleanPath ||
+          (item as any).path === path ||
+          (item as any).path === cleanPath
+        ) {
+          return item
+        }
+        if (item.children) {
+          const found = findFile(item.children)
+          if (found) return found
+        }
+      }
+      return undefined
+    }
+
+    const targetFile = findFile(files)
+    if (targetFile) {
+      setSelectedFileId(targetFile.id)
+      setOpenTabs((prev) => new Set([...prev, targetFile.id]))
+      setActivePanel('code')
+    }
   }
 
   // Sync external activeFileId request (e.g. from clicking Edit on a plan card)
@@ -404,6 +440,18 @@ export function IDELayout({
             ? payload.data.map((d: any) => typeof d === 'string' ? d : JSON.stringify(d)).join(' ')
             : String(payload.data)
 
+          // Ignore browser extension / MetaMask noise that doesn't originate from app code
+          const lower = rawMessage.toLowerCase()
+          if (
+            lower.includes('chrome-extension://') ||
+            lower.includes('metamask') ||
+            lower.includes('inpage.js') ||
+            lower.includes('failed to connect') ||
+            lower.includes('ethereum')
+          ) {
+            return
+          }
+
           // Tag it clearly as coming from the preview iframe
           const taggedMessage = `[Preview] ${rawMessage}`
 
@@ -480,6 +528,14 @@ export function IDELayout({
   const flatFiles = useMemo(() => flattenFileTree(files), [files])
   const isWeb = useMemo(() => checkIsWebProject(flatFiles), [flatFiles])
   const webTemplate = useMemo(() => getSandpackTemplate(flatFiles), [flatFiles])
+  const isCargoProject = useMemo(() => {
+    if (!flatFiles) return false
+    const paths = Object.keys(flatFiles)
+    if (paths.length === 0) return false
+    const hasRust = paths.some((p) => p.endsWith('.rs') || p.toLowerCase().endsWith('cargo.toml'))
+    const hasWeb = paths.some((p) => p.endsWith('.html') || p.endsWith('.jsx') || p.endsWith('.tsx'))
+    return hasRust && !hasWeb
+  }, [flatFiles])
 
   // Simulation of terminal output bootup sequence when the files count changes
   useEffect(() => {
@@ -947,7 +1003,7 @@ export function IDELayout({
           <Panel className="flex-grow flex flex-col min-w-0 bg-[var(--bg-page)] h-full">
             {isLoading ? (
               <div className="flex-grow relative h-full">
-                <LoadingSkeleton />
+                <LoadingSkeleton mode={selectedMode} />
               </div>
             ) : (
               <div className="flex flex-col h-full w-full min-h-0">
@@ -995,9 +1051,16 @@ export function IDELayout({
                         {selectedFile && (
                           <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--border-default)] bg-[var(--bg-surface)] text-xs select-none shrink-0">
                             <Breadcrumb path={breadcrumbPath} />
-                            {!isWeb && selectedFile && !selectedFile.name.endsWith('.md') && (
+                            {(selectedFile && (selectedFile.name.endsWith('.html') || (!isWeb && !selectedFile.name.endsWith('.md')))) && (
                               <button
-                                onClick={handleRunCode}
+                                onClick={() => {
+                                  if (selectedFile.name.endsWith('.html')) {
+                                    syncFileToWebContainer(selectedFileId || selectedFile.name, selectedFile.content || '')
+                                    setActivePanel('preview')
+                                  } else {
+                                    handleRunCode()
+                                  }
+                                }}
                                 disabled={isRunningCode}
                                 className={cn(
                                   "inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all duration-150 cursor-pointer shadow-2xs border",
@@ -1036,8 +1099,8 @@ export function IDELayout({
                                 readOnly={false}
                                 onChange={(val) => {
                                   onFileChange?.(selectedFileId!, val)
-                                  if (nodeInfo.isNode && selectedFile) {
-                                    syncFileToWebContainer(selectedFile.name, val)
+                                  if (selectedFile) {
+                                    syncFileToWebContainer(selectedFileId || selectedFile.name, val)
                                   }
                                 }}
                               />
@@ -1068,22 +1131,14 @@ export function IDELayout({
                       <>
                         <PanelResizeHandle className="h-1 hover:bg-[var(--accent)]/55 bg-[var(--border-default)]/45 transition-colors cursor-row-resize shrink-0 z-30" />
                         <Panel defaultSize={35} minSize={15} className="flex flex-col min-h-0 border-t border-[var(--border-default)]">
-                          {nodeInfo.isNode ? (
-                            <TerminalPanel
-                              files={files}
-                              isExpanded={previewExpanded}
-                              onToggleExpand={setPreviewExpanded}
-                              onServerReady={setWebContainerServerUrl}
-                            />
-                          ) : (
-                            <Preview
-                              output={outputLines}
-                              onClear={() => setOutputLines([])}
-                              isExpanded={previewExpanded}
-                              onToggleExpand={setPreviewExpanded}
-                              onExecuteCommand={handleExecuteCommand}
-                            />
-                          )}
+                          <TerminalPanel
+                            files={files}
+                            projectName={projectName}
+                            isExpanded={previewExpanded}
+                            onToggleExpand={setPreviewExpanded}
+                            onServerReady={setWebContainerServerUrl}
+                            onFsChange={onFsChange}
+                          />
                         </Panel>
                       </>
                     )}
@@ -1093,30 +1148,62 @@ export function IDELayout({
                 {/* Preview View (Live Preview Panel) */}
                 <div className={cn("flex-1 min-h-0 h-full w-full flex flex-col bg-[var(--bg-page)] overflow-hidden relative", activePanel !== 'preview' && "hidden")}>
                   <div className="flex-1 overflow-hidden h-full">
-                    {webContainerServerUrl ? (
+                    {isCargoProject ? (
+                      <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-[var(--bg-surface)] select-none">
+                        <div className="max-w-md flex flex-col items-center gap-4 border border-[var(--border-default)] p-6 rounded-2xl bg-[var(--bg-elevated)]/50 shadow-xs font-sans">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/15">
+                            <Sparkles className="h-6 w-6" />
+                          </div>
+                          <h3 className="text-sm font-bold text-[var(--text-primary)] font-sans">Soroban Smart Contract Workspace</h3>
+                          <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                            Soroban Rust WASM contracts compile to WebAssembly and run on Stellar nodes. Browser preview is active for Web dApp frontends — click <strong>Deploy</strong> to test your smart contract logic on Stellar Testnet.
+                          </p>
+                          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)] text-2xs font-mono text-[var(--accent)] font-semibold">
+                            <span>cargo test · cargo build --target wasm32-unknown-unknown</span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : showStorageNotice ? (
+                      <StorageWarning
+                        onRetry={() => {
+                          setShowStorageNotice(false)
+                          window.location.reload()
+                        }}
+                        onSwitchToDirectPreview={() => setShowStorageNotice(false)}
+                      />
+                    ) : webContainerServerUrl ? (
                       <div className="flex flex-col h-full bg-[var(--bg-page)]">
                         <div className="h-9 border-b border-[var(--border-default)] bg-[var(--bg-surface)] flex items-center justify-between px-4 shrink-0 select-none">
                           <span className="text-xs font-bold text-[var(--text-primary)] font-sans flex items-center gap-2">
                             <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
                             WebContainer Live Preview ({nodeInfo.framework.toUpperCase()})
                           </span>
-                          <a
-                            href={webContainerServerUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 bg-transparent hover:bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-[var(--border-strong)] px-2 py-1 rounded text-3xs font-mono font-bold uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shadow-3xs"
-                          >
-                            Open Tab
-                          </a>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setShowStorageNotice(true)}
+                              className="text-3xs font-sans text-amber-500 hover:underline cursor-pointer"
+                            >
+                              Storage Notice
+                            </button>
+                            <a
+                              href={webContainerServerUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 bg-transparent hover:bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-[var(--border-strong)] px-2 py-1 rounded text-3xs font-mono font-bold uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shadow-3xs"
+                            >
+                              Open Tab
+                            </a>
+                          </div>
                         </div>
                         <iframe
                           src={webContainerServerUrl}
                           className="w-full h-full border-none bg-white flex-1"
                           title="WebContainer Dev Server Preview"
+                          sandbox="allow-scripts allow-modals allow-forms"
                         />
                       </div>
                     ) : (
-                      <SandpackPreviewComponent files={flatFiles} template={webTemplate} projectId={projectId} serverUrl={webContainerServerUrl || undefined} />
+                      <DirectStaticPreview files={flatFiles} projectId={projectId} serverUrl={webContainerServerUrl || undefined} />
                     )}
                   </div>
                 </div>
@@ -1131,8 +1218,10 @@ export function IDELayout({
               <Panel defaultSize={25} minSize={18} maxSize={40} className="flex flex-col h-full bg-[var(--bg-surface)] shrink-0">
                 <ChatPanel
                   messages={initialMessages}
+                  files={files}
                   onSendMessage={onSendMessage}
                   isLoading={isLoading}
+                  onStop={onStop}
                   projectName={projectName}
                   onNewProject={onNewProject}
                   selectedModel={selectedModel}
@@ -1140,6 +1229,8 @@ export function IDELayout({
                   selectedMode={selectedMode}
                   onModeChange={onModeChange}
                   onPlanAction={onPlanAction}
+                  onOpenFile={handleOpenFileByPath}
+                  onOpenPreview={() => setActivePanel('preview')}
                 />
               </Panel>
             </>

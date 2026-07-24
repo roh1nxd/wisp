@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useAuth } from '@clerk/nextjs'
 import { Clock, Code2, ArrowRight, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -38,6 +39,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function RecentProjects({ userId }: { userId: string }) {
+  const { isLoaded } = useAuth()
   const [projects, setProjects] = useState<ProjectMeta[]>([])
   const [mounted, setMounted] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -47,15 +49,16 @@ export default function RecentProjects({ userId }: { userId: string }) {
   }, [])
 
   useEffect(() => {
-    if (!mounted || !userId) {
-      setLoading(false)
+    if (!mounted || !isLoaded) {
       return
     }
     let active = true
 
     const loadDbProjects = async () => {
       try {
-        const res = await fetch(`/api/projects?userId=${encodeURIComponent(userId)}`)
+        const res = await fetch('/api/projects', {
+          credentials: 'same-origin',
+        })
         if (!res.ok) throw new Error('Failed to load projects')
         const data = await res.json()
         if (active) {
@@ -70,7 +73,7 @@ export default function RecentProjects({ userId }: { userId: string }) {
 
     loadDbProjects()
     return () => { active = false }
-  }, [mounted, userId])
+  }, [mounted, isLoaded])
 
   const handleContinue = (id: string) => {
     if (userId) localStorage.setItem(`wisp_active_project_${userId}`, id)
@@ -84,7 +87,10 @@ export default function RecentProjects({ userId }: { userId: string }) {
     setProjects((prev) => prev.filter((p) => p.id !== id))
 
     try {
-      const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/projects/${id}`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+      })
       if (!res.ok) throw new Error('Failed to delete project')
 
       const keys = ['_files', '_messages', '_status']

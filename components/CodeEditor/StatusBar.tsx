@@ -52,7 +52,7 @@ export function StatusBar({ status = 'draft', onDeploy }: StatusBarProps) {
         </div>
       </div>
 
-      {/* Home & Dashboard Navigation Links - Repositioned to be centered horizontally */}
+      {/* Home, Dashboard & Skills Navigation Links - Repositioned to be centered horizontally */}
       <nav className="absolute left-1/2 -translate-x-1/2 hidden sm:flex items-center gap-6 z-50 pointer-events-auto">
         <Link
           href="/"
@@ -65,6 +65,14 @@ export function StatusBar({ status = 'draft', onDeploy }: StatusBarProps) {
           className="text-2xs font-bold uppercase tracking-widest text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] relative z-50 pointer-events-auto cursor-pointer"
         >
           Dashboard
+        </Link>
+        <Link
+          href="/skills"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-2xs font-bold uppercase tracking-widest text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] relative z-50 pointer-events-auto cursor-pointer"
+        >
+          Skills
         </Link>
       </nav>
       

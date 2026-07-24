@@ -1,8 +1,11 @@
 import { auth } from '@clerk/nextjs/server'
+import { redirect } from 'next/navigation'
 import DashboardClient from './DashboardClient'
 
-export default async function Page() {
-  const { userId, redirectToSignIn } = await auth()
-  if (!userId) return redirectToSignIn()
+export default async function DashboardPage() {
+  const { userId } = await auth()
+  if (!userId) {
+    redirect('/sign-in')
+  }
   return <DashboardClient />
 }

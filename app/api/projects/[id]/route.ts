@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
+import { auth } from '@clerk/nextjs/server'
+import prisma from '@/lib/db/prisma'
 
 export async function GET(
   req: NextRequest,
   { params }: { params: any }
 ) {
   try {
+    const { userId } = await auth()
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const { id } = await params
 
     if (!id) {
@@ -43,6 +49,11 @@ export async function DELETE(
   { params }: { params: any }
 ) {
   try {
+    const { userId } = await auth()
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const { id } = await params
 
     if (!id) {
@@ -68,6 +79,11 @@ export async function PATCH(
   { params }: { params: any }
 ) {
   try {
+    const { userId } = await auth()
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const { id } = await params
     const body = await req.json()
     const { name, status } = body

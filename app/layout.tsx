@@ -4,6 +4,7 @@ import { Inter, Geist_Mono } from 'next/font/google'
 import { ClerkProvider } from '@clerk/nextjs'
 import { shadcn } from '@clerk/ui/themes'
 import { AuroraBackground } from '@/components/aurora-background'
+import { WalletGuard } from '@/components/providers/WalletGuard'
 import './globals.css'
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' })
@@ -28,6 +29,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${geistMono.variable} antialiased`}>
       <body className="min-h-screen bg-[var(--bg-page)] text-[var(--text-primary)] font-sans transition-colors duration-150">
+        <WalletGuard />
         <ClerkProvider
           appearance={{
             theme: shadcn,

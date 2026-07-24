@@ -14,6 +14,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { auth } from '@clerk/nextjs/server'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import path from 'path'
@@ -28,6 +29,11 @@ interface InputFile {
 }
 
 export async function POST(req: NextRequest) {
+  const { userId } = await auth()
+  if (!userId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   let tmpDir: string | null = null
 
   try {

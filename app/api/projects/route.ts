@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
+import { auth } from '@clerk/nextjs/server'
+import prisma from '@/lib/db/prisma'
 
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url)
-    const userId = searchParams.get('userId')
-
+    const { userId } = await auth()
     if (!userId) {
-      return NextResponse.json({ error: 'userId is required' }, { status: 400 })
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const projects = await prisma.project.findMany({
@@ -27,12 +26,13 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { userId, name = 'Untitled Project', status = 'draft' } = body
-
+    const { userId } = await auth()
     if (!userId) {
-      return NextResponse.json({ error: 'userId is required to create a project' }, { status: 400 })
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const body = await req.json()
+    const { name = 'Untitled Project', status = 'draft' } = body
 
     const newProject = await prisma.project.create({
       data: {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
+import prisma from '@/lib/db/prisma'
 
 // Map file extensions to MIME types
 function getMimeType(filePath: string): string {
@@ -38,8 +38,9 @@ export async function GET(
       return new NextResponse('Not found', { status: 404 })
     }
 
-    // Reconstruct the file path.
-    const requestedPath = pathSegments.join('/')
+    // Reconstruct the file path and strip query string params
+    const rawRequestedPath = pathSegments.join('/')
+    const requestedPath = rawRequestedPath.split('?')[0]
 
     // Normalize path by removing leading slashes, leading ./, and trailing slashes.
     const cleanRequestedPath = requestedPath
@@ -89,14 +90,14 @@ export async function GET(
     const mimeType = getMimeType(cleanRequestedPath)
     let content = file.content
 
-    // If serving HTML, inject Babel Standalone script tag if JSX/TSX is referenced so browsers can render JSX in standalone tabs
-    if (cleanRequestedPath.endsWith('.html') && (content.includes('.jsx') || content.includes('.tsx') || content.includes('react'))) {
+    // If serving HTML, inject Babel Standalone script tag ONLY if JSX/TSX is referenced
+    if (cleanRequestedPath.endsWith('.html') && (content.includes('.jsx') || content.includes('.tsx'))) {
       if (!content.includes('babel.min.js')) {
         const babelScript = `<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>\n`
         content = content.replace(/<head>/i, `<head>\n  ${babelScript}`)
       }
-      // Change script type="module" targeting .jsx/.tsx to type="text/babel"
-      content = content.replace(/type="module"\s+src="([^"]+\.[jt]sx?)"/gi, 'type="text/babel" data-type="module" src="$1"')
+      // Change script type="module" targeting ONLY .jsx/.tsx to type="text/babel"
+      content = content.replace(/type="module"\s+src="([^"]+\.[jt]sx)"/gi, 'type="text/babel" data-type="module" src="$1"')
     }
 
     return new NextResponse(content, {

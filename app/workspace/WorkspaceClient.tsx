@@ -9,6 +9,15 @@ import { Message } from '@/components/CodeEditor/ChatPanel'
 import { ChatMode } from '@/components/CodeEditor/ChatPanel'
 
 import { Mascot } from '@/components/mascot'
+import {
+  syncFileToWebContainer,
+  deleteFileFromWebContainer,
+  createFolderInWebContainer,
+  renameInWebContainer,
+  readWebContainerFsTree,
+  getWebContainer,
+  clearWebContainerFiles,
+} from '@/lib/webcontainer'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,6 +105,72 @@ function updateFileInTree(nodes: FileItem[], targetId: string, newContent: strin
     if (node.children) return { ...node, children: updateFileInTree(node.children, targetId, newContent) }
     return node
   })
+}
+
+function addPathToTree(
+  nodes: FileItem[],
+  fullPath: string,
+  type: 'file' | 'folder',
+  language?: string,
+  content?: string,
+  parentPath = ''
+): FileItem[] {
+  const parts = fullPath.split('/')
+  const currentSegment = parts[0]
+  const currentFullPath = parentPath ? `${parentPath}/${currentSegment}` : currentSegment
+
+  if (parts.length === 1) {
+    const existingIdx = nodes.findIndex((n) => n.name === currentSegment)
+    const newItem: FileItem = {
+      id: currentFullPath,
+      name: currentSegment,
+      type,
+      language: type === 'file' ? (language || '') : undefined,
+      content: type === 'file' ? (content || '') : undefined,
+      children: type === 'folder' ? [] : undefined,
+    }
+    if (existingIdx >= 0) {
+      const updated = [...nodes]
+      updated[existingIdx] = { ...updated[existingIdx], ...newItem }
+      return updated
+    }
+    return [...nodes, newItem]
+  }
+
+  const restPath = parts.slice(1).join('/')
+
+  let folderIdx = nodes.findIndex((n) => n.name === currentSegment && n.type === 'folder')
+  let folderNode: FileItem
+  let updatedNodes = [...nodes]
+
+  if (folderIdx < 0) {
+    folderNode = {
+      id: currentFullPath,
+      name: currentSegment,
+      type: 'folder',
+      children: [],
+    }
+    updatedNodes.push(folderNode)
+    folderIdx = updatedNodes.length - 1
+  } else {
+    folderNode = updatedNodes[folderIdx]
+  }
+
+  const updatedChildren = addPathToTree(
+    folderNode.children || [],
+    restPath,
+    type,
+    language,
+    content,
+    currentFullPath
+  )
+
+  updatedNodes[folderIdx] = {
+    ...folderNode,
+    children: updatedChildren,
+  }
+
+  return updatedNodes
 }
 
 function buildFileTree(
@@ -246,6 +321,31 @@ class GenerationError extends Error {
   }
 }
 
+function mergeLiveFsWithPrev(liveNodes: FileItem[], prevNodes: FileItem[]): FileItem[] {
+  const prevMap: Record<string, FileItem> = {}
+  const buildMap = (nodes: FileItem[]) => {
+    for (const node of nodes) {
+      if (node) {
+        prevMap[node.id] = node
+        if (node.children) buildMap(node.children)
+      }
+    }
+  }
+  buildMap(prevNodes)
+
+  const merge = (nodes: FileItem[]): FileItem[] => {
+    return nodes.map((node) => {
+      const prev = prevMap[node.id]
+      const mergedContent = prev && prev.content !== undefined ? prev.content : node.content
+      if (node.type === 'folder' && node.children) {
+        return { ...node, children: merge(node.children) }
+      }
+      return { ...node, content: mergedContent }
+    })
+  }
+  return merge(liveNodes)
+}
+
 // ---------------------------------------------------------------------------
 // Page Component
 // ---------------------------------------------------------------------------
@@ -268,6 +368,20 @@ export default function WorkspaceClient() {
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<'draft' | 'unaudited' | 'deployed'>('draft')
   const [isInitialized, setIsInitialized] = useState(false)
+
+  // Single-reload guard to activate COOP/COEP cross-origin isolation headers on client-side route transitions
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !window.crossOriginIsolated) {
+      const reloadedKey = 'wisp_coop_reloaded'
+      const hasReloaded = sessionStorage.getItem(reloadedKey)
+      if (!hasReloaded) {
+        sessionStorage.setItem(reloadedKey, 'true')
+        window.location.reload()
+      }
+    } else if (typeof window !== 'undefined' && window.crossOriginIsolated) {
+      sessionStorage.removeItem('wisp_coop_reloaded')
+    }
+  }, [])
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3-flash-preview')
   const [selectedMode, setSelectedMode] = useState<ChatMode>('Plan')
   const [activeFileId, setActiveFileId] = useState<string>()
@@ -294,7 +408,7 @@ export default function WorkspaceClient() {
     const loadProjectFromDb = async (id: string) => {
       setIsLoading(true)
       try {
-        const res = await fetch(`/api/projects/${id}`)
+        const res = await fetch(`/api/projects/${id}`, { credentials: 'same-origin' })
         if (!res.ok) {
           if (res.status === 404) {
             setProjectNotFound(true)
@@ -390,23 +504,96 @@ export default function WorkspaceClient() {
     }
   }, [isLoaded, effectiveUserId, urlProjectId, urlPrompt, isNewParam])
 
-  // ── Debounced auto-save ───────────────────────────────────────────────────
+  // ── Debounced auto-save & DB sync ─────────────────────────────────────────
   useEffect(() => {
     if (!isInitialized || !projectId || !effectiveUserId) return
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(() => {
+    saveTimeoutRef.current = setTimeout(async () => {
+      // 1. Save to local storage for immediate client recovery
       saveProjectData(projectId, files, messages, status)
+
+      // 2. Auto-create project record in DB if not yet saved
+      let activeId = projectId
+      let currentlySaved = isSavedInDb
+
+      if (!currentlySaved && files.length > 0) {
+        try {
+          const createRes = await fetch('/api/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: effectiveUserId,
+              name: projectName,
+              status,
+            }),
+          })
+          if (createRes.ok) {
+            const createData = await createRes.json()
+            activeId = createData.project.id
+            setProjectId(activeId)
+            setIsSavedInDb(true)
+            currentlySaved = true
+            localStorage.setItem(activeProjectKey(effectiveUserId), activeId)
+            const newUrl = `${window.location.pathname}?project=${activeId}`
+            window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, '', newUrl)
+          }
+        } catch (err) {
+          console.error('[AutoSave] Failed to create project row in DB:', err)
+        }
+      }
+
+      // 3. Sync files to database generatedFiles table
+      if (currentlySaved && files.length > 0) {
+        try {
+          const flat = flattenFilesForAPI(files)
+          await fetch(`/api/projects/${activeId}/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: flat }),
+          })
+        } catch (err) {
+          console.error('[AutoSave] Failed to sync files to DB:', err)
+        }
+      }
     }, 500)
 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     }
-  }, [files, messages, status, projectId, isInitialized, effectiveUserId])
+  }, [files, messages, status, projectId, isInitialized, effectiveUserId, isSavedInDb, projectName])
+
+  // ── Live WebContainer Filesystem Sync ────────────────────────────────────
+  const handleFsSync = useCallback(async () => {
+    const liveFsTree = await readWebContainerFsTree()
+    if (liveFsTree && liveFsTree.length > 0) {
+      setFiles((prev) => {
+        if (prev.length === 0) return liveFsTree
+        return mergeLiveFsWithPrev(liveFsTree, prev)
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isInitialized) return
+    let intervalId: NodeJS.Timeout | null = null
+
+    getWebContainer().then((wc) => {
+      if (!wc) return
+      handleFsSync()
+      intervalId = setInterval(handleFsSync, 2000)
+    })
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+    }
+  }, [isInitialized, handleFsSync])
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleFileChange = useCallback((fileId: string, newContent: string) => {
     setFiles((prev) => updateFileInTree(prev, fileId, newContent))
+    // BUG 3 Fix: Write back directly to WebContainer virtual filesystem for instant Vite HMR
+    syncFileToWebContainer(fileId, newContent)
   }, [])
 
   const handleNewProject = useCallback(() => {
@@ -415,8 +602,11 @@ export default function WorkspaceClient() {
     setProjectName('Untitled Project')
     setFiles([])
     setMessages([])
+    setSelectedMode('Plan')
+    setSelectedModel('gemini-3-flash-preview')
     setStatus('draft')
     setIsSavedInDb(false)
+    clearWebContainerFiles()
     if (effectiveUserId) localStorage.removeItem(activeProjectKey(effectiveUserId))
     const newUrl = `${window.location.pathname}?new=true`
     window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, '', newUrl)
@@ -424,48 +614,134 @@ export default function WorkspaceClient() {
 
   const handleCreateFile = useCallback((name: string, type: 'file' | 'folder') => {
     const ext = name.includes('.') ? name.split('.').pop() || '' : ''
-    const newItem: FileItem = {
-      id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      name,
-      type,
-      language: ext,
-      content: type === 'file' ? '' : undefined,
-      children: type === 'folder' ? [] : undefined,
+    setFiles((prev) => addPathToTree(prev, name, type, ext, type === 'file' ? '' : undefined))
+
+    if (type === 'folder') {
+      createFolderInWebContainer(name)
+    } else {
+      syncFileToWebContainer(name, '')
     }
-    setFiles((prev) => [...prev, newItem])
   }, [])
 
-  const generateCode = useCallback(async (prompt: string, modelOverride?: string, modeOverride?: ChatMode) => {
-    const trimmed = prompt.trim()
-    if (!trimmed) return
+  const handleRenameFile = useCallback((fileId: string, newName: string) => {
+    renameInWebContainer(fileId, newName)
+    setFiles((prev) => {
+      let targetNode: FileItem | null = null
+      const removeOld = (nodes: FileItem[]): FileItem[] => {
+        return nodes
+          .filter((n) => {
+            if (n.id === fileId) {
+              targetNode = n
+              return false
+            }
+            return true
+          })
+          .map((n) => (n.children ? { ...n, children: removeOld(n.children) } : n))
+      }
 
-    // Abort previous in-flight request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-    const controller = new AbortController()
-    abortControllerRef.current = controller
+      const treeWithoutOld = removeOld(prev)
+      if (!targetNode) return prev
 
-    const priorMessages = [...messages]
-    const currentFlatFiles = flattenFilesForAPI(files)
+      const ext = newName.includes('.') ? newName.split('.').pop() || '' : ''
+      const updatedNode: FileItem = {
+        ...(targetNode as FileItem),
+        id: newName,
+        name: newName.split('/').pop() || newName,
+        language: ext,
+      }
 
-    const userMsg: Message = { id: `user-${Date.now()}`, role: 'user', content: trimmed }
-    const workingMsgId = `ai-working-${Date.now()}`
-    setMessages((prev) => [
-      ...prev,
-      userMsg,
-      { id: workingMsgId, role: 'assistant', content: '⚙️ Working on it...' }
-    ])
-    setIsLoading(true)
+      const parts = newName.split('/')
+      if (parts.length > 1) {
+        const parentFolderPath = parts.slice(0, -1).join('/')
+        const insertIntoParent = (nodes: FileItem[]): FileItem[] => {
+          return nodes.map((n) => {
+            if (n.id === parentFolderPath && n.type === 'folder') {
+              return { ...n, children: [...(n.children || []), updatedNode] }
+            }
+            if (n.children) return { ...n, children: insertIntoParent(n.children) }
+            return n
+          })
+        }
+        return insertIntoParent(treeWithoutOld)
+      } else {
+        return [...treeWithoutOld, updatedNode]
+      }
+    })
+  }, [])
 
-    const modelToUse = modelOverride || selectedModel
-    const modeToUse = modeOverride || selectedMode
-    let activeProjectId = projectId
-    let currentIsSaved = isSavedInDb
-    const modelToUseEscaped = modelToUse // keep original
+  const handleDeleteFile = useCallback((fileId: string) => {
+    deleteFileFromWebContainer(fileId)
+    setFiles((prev) => {
+      const deleteFromTree = (nodes: FileItem[]): FileItem[] => {
+        return nodes
+          .filter((n) => n.id !== fileId)
+          .map((n) => (n.children ? { ...n, children: deleteFromTree(n.children) } : n))
+      }
+      return deleteFromTree(prev)
+    })
+  }, [])
 
-    try {
-      // 1. If project is not yet saved in DB, create it first
+  const generateCode = useCallback(
+    async (
+      prompt: string,
+      modelOverride?: string,
+      modeOverride?: ChatMode,
+      skillInstructions?: string,
+      skillTags?: string[],
+      imageUrl?: string
+    ) => {
+      const trimmed = prompt.trim()
+      if (!trimmed) return
+
+      // Abort previous in-flight request
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      const priorMessages = [...messages]
+      const currentFlatFiles = flattenFilesForAPI(files)
+
+      const modelToUse = modelOverride || selectedModel
+      const modeToUse = modeOverride || selectedMode
+
+      const initialWorkingContent =
+        modeToUse === 'Plan' ? '📋 Generating plan (PRD & roadmap)...' : '⚙️ Writing code implementation...'
+
+      const userMsg: Message = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: trimmed,
+        skillTags: skillTags && skillTags.length > 0 ? skillTags : undefined,
+      }
+      const workingMsgId = `ai-working-${Date.now()}`
+      setMessages((prev) => [
+        ...prev,
+        userMsg,
+        {
+          id: workingMsgId,
+          role: 'assistant',
+          content: initialWorkingContent,
+          mode: modeToUse,
+          modelUsed: modelToUse,
+          promptText: trimmed,
+          isComplete: false,
+          events: [
+            {
+              type: 'thinking',
+              message: `Initiating ${modeToUse} generation request...`,
+            },
+          ],
+        },
+      ])
+      setIsLoading(true)
+      let activeProjectId = projectId
+      let currentIsSaved = isSavedInDb
+      const modelToUseEscaped = modelToUse // keep original
+
+      try {
+        // 1. If project is not yet saved in DB, create it first
       if (!currentIsSaved && effectiveUserId) {
         try {
           const createRes = await fetch('/api/projects', {
@@ -490,38 +766,139 @@ export default function WorkspaceClient() {
             window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, '', newUrl)
           }
         } catch (createErr) {
-          console.error('Failed to pre-create project row in DB:', createErr)
+          console.error('[WorkspaceClient] Project creation before generation failed:', createErr)
         }
       }
 
-      // 2. Call generate API passing database projectId and userId
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: trimmed,
-          messages: priorMessages,
-          currentFiles: currentFlatFiles,
-          model: modelToUseEscaped,
-          projectId: activeProjectId,
-          userId: effectiveUserId,
-          mode: modeToUse,
-        }),
-        signal: controller.signal,
-      })
+      // 2. Call generate API passing database projectId and userId with exponential backoff retries
+      let res: Response | null = null
+      let autoRetryAttempt = 0
+      const maxAutoRetries = 3
+      let lastFetchError: any = null
 
-      if (!res.ok) {
-        let errMsg = 'Generation failed — please try again.'
-        let details: any[] = []
+      while (autoRetryAttempt < maxAutoRetries) {
+        autoRetryAttempt++
+
+        if (autoRetryAttempt > 1) {
+          const delayMs = Math.pow(2, autoRetryAttempt - 1) * 1000 // 2s, 4s
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === workingMsgId
+                ? {
+                    ...msg,
+                    content: `⏳ AI service busy. Retrying automatically with fallback model (Attempt ${autoRetryAttempt}/${maxAutoRetries})...`,
+                  }
+                : msg
+            )
+          )
+          await new Promise((resolve) => setTimeout(resolve, delayMs))
+        }
+
         try {
-          const data = await res.json()
-          errMsg = data.error || data.message || errMsg
-          details = data.details || []
-        } catch {}
-        throw new GenerationError(errMsg, details)
+          res = await fetch('/api/generate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/x-ndjson, application/json',
+            },
+            body: JSON.stringify({
+              prompt: trimmed,
+              messages: priorMessages,
+              currentFiles: currentFlatFiles,
+              model: modelToUseEscaped,
+              projectId: activeProjectId,
+              userId: effectiveUserId,
+              mode: modeToUse,
+              skillInstructions: skillInstructions || '',
+              imageUrl,
+            }),
+            signal: controller.signal,
+          })
+
+          if (res.ok) {
+            break // Succeeded!
+          }
+
+          let errMsg = 'Generation failed — please try again.'
+          let details: any[] = []
+          try {
+            const data = await res.json()
+            errMsg = data.error || data.message || errMsg
+            details = data.details || []
+          } catch {}
+
+          lastFetchError = new GenerationError(errMsg, details)
+        } catch (fetchErr: any) {
+          if (fetchErr?.name === 'AbortError') throw fetchErr
+          lastFetchError = fetchErr
+        }
       }
 
-      const data = await res.json()
+      if (!res || !res.ok) {
+        throw lastFetchError || new GenerationError('Generation failed after automatic retries.')
+      }
+
+      let data: any = null
+      const contentType = res.headers.get('content-type') || ''
+
+      if (contentType.includes('application/x-ndjson') && res.body) {
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const event = JSON.parse(line.trim())
+              console.log('[Generation Event]', event)
+
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === workingMsgId
+                    ? {
+                        ...msg,
+                        events: [...(msg.events || []), event],
+                        mode: modeToUse,
+                      }
+                    : msg
+                )
+              )
+
+              if (event.type === 'done') {
+                data = event
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === workingMsgId
+                      ? {
+                          ...msg,
+                          isComplete: true,
+                        }
+                      : msg
+                  )
+                )
+              } else if (event.type === 'error') {
+                throw new GenerationError(event.error || 'Generation failed', event.details || [])
+              }
+            } catch (e) {
+              if (e instanceof GenerationError) throw e
+            }
+          }
+        }
+      }
+
+      if (!data) {
+        try {
+          data = await res.json()
+        } catch {
+          data = {}
+        }
+      }
 
       // ── Plan mode: handle planContent response ───────────────────────────
       if (modeToUse === 'Plan' && data.planContent) {
@@ -584,8 +961,15 @@ export default function WorkspaceClient() {
       }
       setStatus('unaudited')
 
-      const summary = data.summary ?? `Generated ${data.files?.length ?? 0} file(s).`
-      let doneContent = `Done! Here's your ${summary}`
+      const summaryText = typeof data.summaryText === 'string'
+        ? data.summaryText
+        : typeof data.summary === 'string'
+        ? data.summary
+        : data.summary && typeof data.summary === 'object'
+        ? `Generated ${data.summary.filesCreated || generatedFiles.length || 0} file(s).`
+        : `Generated ${generatedFiles.length || 0} file(s).`
+
+      let doneContent = `Done! Here's your ${summaryText}`
 
       // ── Phase 4 Validation Gate: check smart contract compilation ────────
       const currentFlat = flattenFilesForAPI(
@@ -639,7 +1023,7 @@ export default function WorkspaceClient() {
             }
           } else {
             retryCountRef.current = 0
-            doneContent = `Done! Here's your ${summary}\n\n✅ **Contract Validation Passed**: \`cargo build --target wasm32-unknown-unknown --release\` compiled cleanly.`
+            doneContent = `Done! Here's your ${summaryText}\n\n✅ **Contract Validation Passed**: \`cargo build --target wasm32-unknown-unknown --release\` compiled cleanly.`
           }
         } catch (checkErr) {
           console.warn('[Validation Gate] Contract check skipped:', checkErr)
@@ -655,7 +1039,7 @@ export default function WorkspaceClient() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === workingMsgId
-            ? { ...msg, content: doneContent }
+            ? { ...msg, content: doneContent, modelUsed: data.modelUsed || modelToUseEscaped }
             : msg
         )
       )
@@ -739,13 +1123,28 @@ export default function WorkspaceClient() {
           ]
         }
 
-        userFriendlyContent = `❌ **${genericMsg}**\n\n**What likely went wrong:**\n${explanation}\n\n**Suggested actions:**\n${suggestions.map(s => `- ${s}`).join('\n')}`
+        userFriendlyContent = `❌ **${genericMsg}**\n\n**What likely went wrong:**\n${explanation}\n\n**Suggested actions:**\n${suggestions.map((s) => `- ${s}`).join('\n')}`
       }
+
+      const cleanUserMessage =
+        'The AI models are currently at capacity or unavailable. Try again in a moment, or switch to a different model from the dropdown above.'
+      const failedStepName = modeToUse === 'Plan' ? 'Plan Generation' : 'Code Generation'
 
       setMessages((prev) =>
         prev.map((m) =>
           m.id === workingMsgId
-            ? { ...m, content: userFriendlyContent }
+            ? {
+                ...m,
+                content: cleanUserMessage,
+                isError: true,
+                isComplete: true,
+                retryPrompt: trimmed,
+                failedStep: failedStepName,
+                events: [
+                  ...(m.events || []),
+                  { type: 'thinking', message: '⚠️ Generation stopped due to model capacity limit.' },
+                ],
+              }
             : m
         )
       )
@@ -755,8 +1154,33 @@ export default function WorkspaceClient() {
         setIsLoading(false)
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, messages, files, effectiveUserId, projectId, projectName, selectedModel, selectedMode])
+  },
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [isLoading, messages, files, effectiveUserId, projectId, projectName, selectedModel, selectedMode]
+)
+
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    setIsLoading(false)
+    setMessages((prev) => {
+      if (prev.length === 0) return prev
+      const lastMsg = prev[prev.length - 1]
+      if (lastMsg && lastMsg.role === 'assistant') {
+        return prev.map((m) =>
+          m.id === lastMsg.id
+            ? { ...m, content: '⏹ Generation stopped by user', isError: false }
+            : m
+        )
+      }
+      return [
+        ...prev,
+        { id: `stop-${Date.now()}`, role: 'assistant', content: '⏹ Generation stopped by user' },
+      ]
+    })
+  }, [])
 
   const handleDeploy = useCallback(async () => {
     const workingMsgId = `deploy-working-${Date.now()}`
@@ -873,41 +1297,6 @@ export default function WorkspaceClient() {
     }
   }, [files, selectedModel, generateCode])
 
-  const handleDeleteFile = useCallback((fileId: string) => {
-    const removeFromTree = (items: FileItem[]): FileItem[] => {
-      return items
-        .filter((item) => item.id !== fileId)
-        .map((item) => ({
-          ...item,
-          children: item.children ? removeFromTree(item.children) : undefined,
-        }))
-    }
-    setFiles((prev) => removeFromTree(prev))
-  }, [])
-
-  const handleRenameFile = useCallback((fileId: string, newName: string) => {
-    const ext = newName.includes('.') ? newName.split('.').pop() || '' : ''
-    const renameInTree = (items: FileItem[]): FileItem[] => {
-      return items.map((item) => {
-        if (item.id === fileId) {
-          return {
-            ...item,
-            name: newName,
-            language: item.type === 'file' ? ext : item.language,
-          }
-        }
-        if (item.children) {
-          return {
-            ...item,
-            children: renameInTree(item.children),
-          }
-        }
-        return item
-      })
-    }
-    setFiles((prev) => renameInTree(prev))
-  }, [])
-
 
 
   // ── Auto-generate on URL prompt ───────────────────────────────────────────
@@ -984,6 +1373,7 @@ export default function WorkspaceClient() {
       files={files}
       status={status}
       isLoading={isLoading}
+      onStop={handleStop}
       initialMessages={messages}
       projectName={projectName}
       onSendMessage={generateCode}
@@ -1000,6 +1390,7 @@ export default function WorkspaceClient() {
       onModeChange={setSelectedMode}
       onPlanAction={handlePlanAction}
       activeFileId={activeFileId}
+      onFsChange={handleFsSync}
     />
   )
 }

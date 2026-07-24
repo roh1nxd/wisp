@@ -35,10 +35,12 @@ export function FileExplorer({
 }: FileExplorerProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [creationMode, setCreationMode] = useState<CreationMode>(null)
+  const [isCreatingAtRoot, setIsCreatingAtRoot] = useState(false)
   const [newItemName, setNewItemName] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<FileItem | null>(null)
+  const [explorerError, setExplorerError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
 
@@ -55,6 +57,12 @@ export function FileExplorer({
     }
   }, [editingId])
 
+  const showDuplicateError = (name: string, targetDir: string) => {
+    const loc = targetDir ? `in folder '${targetDir.split('/').pop()}'` : 'at root'
+    setExplorerError(`A file or folder named '${name}' already exists ${loc}.`)
+    setTimeout(() => setExplorerError(null), 4000)
+  }
+
   const toggleExpanded = (id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev)
@@ -67,25 +75,95 @@ export function FileExplorer({
     })
   }
 
-  const handleStartCreation = (mode: CreationMode) => {
+  const handleStartCreation = (mode: CreationMode, atRoot: boolean = false) => {
+    setIsCreatingAtRoot(atRoot)
     setCreationMode(mode)
     setNewItemName('')
   }
+
+  const checkDuplicateName = (targetFolder: string, newName: string): boolean => {
+    const normNewName = newName.toLowerCase().trim()
+    const getSiblings = (nodes: FileItem[], folderPath: string): FileItem[] => {
+      if (!folderPath) return nodes
+      for (const node of nodes) {
+        if (node.type === 'folder' && node.id === folderPath) {
+          return node.children || []
+        }
+        if (node.children) {
+          const found = getSiblings(node.children, folderPath)
+          if (found.length > 0) return found
+        }
+      }
+      return []
+    }
+
+    const siblings = getSiblings(files, targetFolder)
+    return siblings.some((item) => item.name.toLowerCase() === normNewName)
+  }
+
+  const handleDropRoot = (e: React.DragEvent) => {
+    e.preventDefault()
+    const draggedId = e.dataTransfer.getData('text/plain')
+    if (!draggedId) return
+    const fileName = draggedId.split('/').pop() || draggedId
+    if (draggedId !== fileName) {
+      if (checkDuplicateName('', fileName)) {
+        showDuplicateError(fileName, '')
+        return
+      }
+      onRenameFile?.(draggedId, fileName)
+    }
+  }
+
+function getTargetFolder(files: FileItem[], selectedId?: string): string {
+  if (!selectedId) return ''
+  const findNode = (nodes: FileItem[]): FileItem | undefined => {
+    for (const n of nodes) {
+      if (n.id === selectedId) return n
+      if (n.children) {
+        const found = findNode(n.children)
+        if (found) return found
+      }
+    }
+    return undefined
+  }
+  const item = findNode(files)
+  if (!item) return ''
+  if (item.type === 'folder') return item.id
+  if (item.id.includes('/')) return item.id.slice(0, item.id.lastIndexOf('/'))
+  return ''
+}
 
   const handleConfirmCreate = () => {
     const trimmed = newItemName.trim()
     if (!trimmed || !creationMode) {
       setCreationMode(null)
+      setIsCreatingAtRoot(false)
       setNewItemName('')
       return
     }
-    onCreateFile?.(trimmed, creationMode)
+    const targetFolder = isCreatingAtRoot ? '' : getTargetFolder(files, selectedFileId)
+    if (checkDuplicateName(targetFolder, trimmed)) {
+      showDuplicateError(trimmed, targetFolder)
+      setCreationMode(null)
+      setIsCreatingAtRoot(false)
+      setNewItemName('')
+      return
+    }
+
+    const fullPath = targetFolder ? `${targetFolder}/${trimmed}` : trimmed
+    if (targetFolder) {
+      setExpandedIds((prev) => new Set(prev).add(targetFolder))
+    }
+    onCreateFile?.(fullPath, creationMode)
     setCreationMode(null)
+    setIsCreatingAtRoot(false)
     setNewItemName('')
   }
 
   const handleCancelCreate = () => {
     setCreationMode(null)
+    setIsCreatingAtRoot(false)
     setNewItemName('')
   }
 
@@ -98,6 +176,13 @@ export function FileExplorer({
   const handleConfirmRename = (item: FileItem) => {
     const trimmed = renameValue.trim()
     if (trimmed && trimmed !== item.name) {
+      const parentFolder = getTargetFolder(files, item.id)
+      if (checkDuplicateName(parentFolder, trimmed)) {
+        showDuplicateError(trimmed, parentFolder)
+        setEditingId(null)
+        setRenameValue('')
+        return
+      }
       onRenameFile?.(item.id, trimmed)
     }
     setEditingId(null)
@@ -126,6 +211,33 @@ export function FileExplorer({
     if (e.key === 'Escape') setEditingId(null)
   }
 
+  const handleDragStart = (e: React.DragEvent, item: FileItem) => {
+    e.dataTransfer.setData('text/plain', item.id)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+  }
+
+  const handleDrop = (e: React.DragEvent, targetItem: FileItem) => {
+    e.preventDefault()
+    const draggedId = e.dataTransfer.getData('text/plain')
+    if (!draggedId || draggedId === targetItem.id) return
+
+    const targetFolder = targetItem.type === 'folder' ? targetItem.id : ''
+    const fileName = draggedId.split('/').pop() || draggedId
+    const newPath = targetFolder ? `${targetFolder}/${fileName}` : fileName
+
+    if (draggedId !== newPath) {
+      if (checkDuplicateName(targetFolder, fileName)) {
+        showDuplicateError(fileName, targetFolder)
+        return
+      }
+      onRenameFile?.(draggedId, newPath)
+    }
+  }
+
   const renderItem = (item: FileItem, depth: number = 0) => {
     const isExpanded = expandedIds.has(item.id)
     const isSelected = selectedFileId === item.id
@@ -135,6 +247,10 @@ export function FileExplorer({
     return (
       <div key={item.id} className="flex flex-col">
         <div
+          draggable={!isEditing}
+          onDragStart={(e) => handleDragStart(e, item)}
+          onDragOver={handleDragOver}
+          onDrop={(e) => handleDrop(e, item)}
           onClick={() => {
             if (isEditing) return
             if (isFolder) {
@@ -144,19 +260,19 @@ export function FileExplorer({
             }
           }}
           className={cn(
-            'flex items-center gap-2 py-1.5 px-3 mx-2 rounded-lg cursor-pointer text-xs transition-colors duration-150 select-none group relative',
+            'flex items-center gap-2 py-1.5 px-2.5 mx-1.5 rounded-lg cursor-pointer text-xs transition-colors duration-150 select-none group relative min-h-[34px]',
             isSelected
-              ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-medium border-l border-[var(--accent)] rounded-l-none'
+              ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold border-l-2 border-[var(--accent)] shadow-3xs'
               : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]'
           )}
-          style={{ paddingLeft: `${depth * 12 + 12}px` }}
+          style={{ paddingLeft: `${depth * 14 + 10}px` }}
         >
           {isFolder ? (
-            <ChevronRight className={cn('h-3.5 w-3.5 text-[var(--text-muted)] transition-transform duration-150', isExpanded && 'transform rotate-90')} />
+            <ChevronRight className={cn('h-3.5 w-3.5 text-[var(--text-muted)] transition-transform duration-150 shrink-0', isExpanded && 'transform rotate-90')} />
           ) : (
             <div className="w-3.5 h-3.5 shrink-0" />
           )}
-          <FileIcon name={item.name} isFolder={isFolder} className="h-3.5 w-3.5 shrink-0" />
+          <FileIcon name={item.name} isFolder={isFolder} isOpen={isExpanded} className="h-4 w-4 shrink-0" />
 
           {isEditing ? (
             <div className="flex-1 flex items-center gap-1 min-w-0" onClick={(e) => e.stopPropagation()}>
@@ -212,15 +328,15 @@ export function FileExplorer({
         {/* New file / folder buttons */}
         <div className="flex items-center gap-1">
           <button
-            onClick={() => handleStartCreation('file')}
-            title="New File"
+            onClick={() => handleStartCreation('file', true)}
+            title="New File at Root"
             className="flex items-center justify-center w-6 h-6 rounded hover:bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
           >
             <FilePlus className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => handleStartCreation('folder')}
-            title="New Folder"
+            onClick={() => handleStartCreation('folder', true)}
+            title="New Folder at Root"
             className="flex items-center justify-center w-6 h-6 rounded hover:bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
           >
             <FolderPlus className="h-3.5 w-3.5" />
@@ -228,8 +344,22 @@ export function FileExplorer({
         </div>
       </div>
 
+      {/* Explorer Error Banner */}
+      {explorerError && (
+        <div className="mx-2 my-1.5 px-2.5 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-2xs font-sans flex items-center justify-between animate-in fade-in shrink-0">
+          <span className="truncate pr-1">{explorerError}</span>
+          <button onClick={() => setExplorerError(null)} className="hover:text-white shrink-0">
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
       {/* File tree */}
-      <div className="flex-grow overflow-y-auto py-3 min-h-0">
+      <div
+        onDragOver={handleDragOver}
+        onDrop={handleDropRoot}
+        className="flex-grow overflow-y-auto py-3 min-h-0"
+      >
         {files.map((item) => renderItem(item))}
 
         {/* Inline new item input row */}

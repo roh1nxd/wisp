@@ -1,14 +1,28 @@
 import { clerkMiddleware } from '@clerk/nextjs/server'
+import { NextResponse } from 'next/server'
 
-export default clerkMiddleware()
+export default clerkMiddleware(async (auth, req) => {
+  const res = NextResponse.next()
+  const path = req.nextUrl.pathname
+
+  if (
+    path.startsWith('/workspace') ||
+    path.startsWith('/api/preview') ||
+    path.startsWith('/api/projects') ||
+    path.startsWith('/api/run')
+  ) {
+    res.headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+    res.headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+    res.headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
+  }
+
+  return res
+})
 
 export const config = {
   matcher: [
-    // Skip Next.js internals and all static files, unless found in search params
-    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
-    // Always run for API routes
+    '/((?!.*\\..*|_next).*)',
+    '/',
     '/(api|trpc)(.*)',
-    // Always run for Clerk-specific frontend API routes
-    '/__clerk/(.*)',
   ],
 }

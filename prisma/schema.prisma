@@ -47,3 +47,13 @@ model GeneratedFile {
 
   @@map("generated_files")
 }
+
+model SkillLike {
+  id        String   @id @default(uuid())
+  slug      String
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([slug, userId])
+  @@map("skill_likes")
+}

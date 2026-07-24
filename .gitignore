@@ -23,3 +23,11 @@ npm-debug.log*
 
 # duplicate lock file
 .vercel
+
+# runtime generated plan files & temp junk
+.wisp-plans/
+temp_run/
+temp_unzip/
+.next_clean/
+structure.txt
+

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Plus, X, Terminal as TerminalIcon, ShieldAlert } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { getWebContainer } from '@/lib/webcontainer'
+import { getWebContainer, createFolderInWebContainer, normalizeWorkspacePath, checkWebContainerPathExists } from '@/lib/webcontainer'
 import { FileItem } from './FileExplorer'
 import type { WebContainerProcess } from '@webcontainer/api'
 
@@ -20,29 +20,43 @@ interface TerminalTab {
   lines: OutputLine[]
   process: WebContainerProcess | null
   isRunning: boolean
+  cwd: string
 }
 
 interface TerminalPanelProps {
   files?: FileItem[]
+  webContainerBooted?: boolean
+  onFsChange?: () => void
+  projectName?: string
   isExpanded?: boolean
   onToggleExpand?: (expanded: boolean) => void
   onServerReady?: (url: string) => void
 }
 
+function cleanAnsiText(text: string): string {
+  if (!text) return ''
+  return text
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+    .replace(/\x1B\].*?\x07/g, '')
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
+    .replace(/\r/g, '')
+}
+
 export function TerminalPanel({
   files = [],
+  projectName,
   isExpanded = true,
   onToggleExpand,
   onServerReady,
+  onFsChange,
 }: TerminalPanelProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([
-    { id: 'term-1', name: 'Terminal 1', lines: [], process: null, isRunning: false },
+    { id: 'term-1', name: 'Terminal 1', lines: [], process: null, isRunning: false, cwd: '~' },
   ])
   const [activeTabId, setActiveTabId] = useState<string>('term-1')
   const [inputVal, setInputVal] = useState('')
   const [history, setHistory] = useState<string[]>([])
   const [historyIdx, setHistoryIdx] = useState<number>(-1)
-  const [currentDir, setCurrentDir] = useState<string>('~')
   const [webContainerBooted, setWebContainerBooted] = useState(false)
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0]
@@ -50,14 +64,23 @@ export function TerminalPanel({
   const terminalEndRef = useRef<HTMLDivElement>(null)
   const hasAutoRunRef = useRef(false)
 
+  const promptDir = (projectName && projectName.trim())
+    ? projectName.toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    : 'wisp'
+
+  const activeCwd = activeTab?.cwd || '~'
+  const promptString = activeCwd === '~' ? promptDir : `${promptDir}/${activeCwd}`
+
   const appendLine = useCallback((tabId: string, message: string, type: 'log' | 'error' | 'warn' | 'info' = 'log') => {
+    const cleanedMessage = cleanAnsiText(message)
+    if (!cleanedMessage && message) return
     setTabs((prev) =>
       prev.map((t) => {
         if (t.id !== tabId) return t
         const newLine: OutputLine = {
           id: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type,
-          message,
+          message: cleanedMessage,
           timestamp: new Date(),
         }
         return {
@@ -102,41 +125,93 @@ export function TerminalPanel({
 
     const lowerCmd = trimmed.toLowerCase()
 
+    const currentTab = tabs.find((t) => t.id === tabId)
+    const tabCwd = currentTab?.cwd || '~'
+
     // 1. Handle clear / cls
     if (lowerCmd === 'clear' || lowerCmd === 'cls') {
       setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, lines: [] } : t)))
       return
     }
 
-    // 2. Handle cd
-    if (lowerCmd === 'cd' || lowerCmd.startsWith('cd ')) {
-      appendLine(tabId, `wisp:${currentDir}$ ${trimmed}`, 'log')
-      const target = trimmed.slice(2).trim()
-      if (!target || target === '~' || target === '/') {
-        setCurrentDir('~')
-      } else if (target === '..') {
-        const parts = currentDir.split('/').filter(Boolean)
-        if (parts.length <= 1) setCurrentDir('~')
-        else setCurrentDir(parts.slice(0, -1).join('/'))
-      } else {
-        const cleanTarget = target.replace(/^\.\//, '').replace(/\/$/, '')
-        setCurrentDir(currentDir === '~' ? cleanTarget : `${currentDir}/${cleanTarget}`)
-      }
-      return
-    }
-
-    // 3. Handle pwd
+    // 2. Handle pwd
     if (lowerCmd === 'pwd') {
-      appendLine(tabId, `wisp:${currentDir}$ pwd`, 'log')
-      appendLine(tabId, currentDir === '~' ? '/workspace' : `/workspace/${currentDir}`, 'log')
+      appendLine(tabId, `wisp:${tabCwd}$ ${trimmed}`, 'log')
+      const displayPath = tabCwd === '~' ? '/' : (tabCwd.startsWith('/') ? tabCwd : `/${tabCwd}`)
+      appendLine(tabId, displayPath, 'log')
       return
     }
 
-    appendLine(tabId, `wisp:${currentDir}$ ${trimmed}`, 'log')
+    // 3. Handle cd
+    if (lowerCmd === 'cd' || lowerCmd === 'cd..' || lowerCmd.startsWith('cd ') || lowerCmd.startsWith('cd/')) {
+      appendLine(tabId, `wisp:${tabCwd}$ ${trimmed}`, 'log')
+
+      let target = ''
+      if (lowerCmd === 'cd..') {
+        target = '..'
+      } else {
+        target = trimmed.slice(2).trim()
+      }
+
+      if (!target || target === '~' || target === '/') {
+        setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, cwd: '~' } : t)))
+        return
+      }
+
+      const { cwd: nextCwd, canonicalPath } = normalizeWorkspacePath(tabCwd, target)
+
+      // If nextCwd resolved back to root ('~' or empty canonicalPath), navigate immediately
+      if (nextCwd === '~' || !canonicalPath) {
+        setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, cwd: '~' } : t)))
+        return
+      }
+
+      const targetParts = canonicalPath.split('/')
+      const targetName = targetParts.pop() || ''
+      const parentCwd = targetParts.length === 0 ? '~' : targetParts.join('/')
+
+      const { exists, isDirectory } = await checkWebContainerPathExists(parentCwd, targetName)
+
+      if (!exists) {
+        // Sync folder into WebContainer virtual FS if created in Explorer UI
+        const created = await createFolderInWebContainer(nextCwd)
+        if (created) {
+          const checkAgain = await checkWebContainerPathExists(parentCwd, targetName)
+          if (!checkAgain.exists) {
+            appendLine(tabId, `cd: no such file or directory: ${target}`, 'error')
+            return
+          }
+          if (!checkAgain.isDirectory) {
+            appendLine(tabId, `cd: not a directory: ${target}`, 'error')
+            return
+          }
+        } else {
+          appendLine(tabId, `cd: no such file or directory: ${target}`, 'error')
+          return
+        }
+      } else if (!isDirectory) {
+        appendLine(tabId, `cd: not a directory: ${target}`, 'error')
+        return
+      }
+
+      setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, cwd: nextCwd } : t)))
+      return
+    }
+
+    appendLine(tabId, `wisp:${tabCwd}$ ${trimmed}`, 'log')
 
     const wc = await getWebContainer()
     if (!wc) {
-      appendLine(tabId, 'ℹ️ Static project mode — command execution available in Node.js WebContainer projects.', 'info')
+      if (typeof window !== 'undefined' && !window.crossOriginIsolated) {
+        appendLine(tabId, '❌ WebContainer failed to boot: Cross-Origin Isolation (COOP/COEP) is missing. Reloading page to activate isolation...', 'error')
+        const reloadedKey = 'wisp_coop_reloaded'
+        if (!sessionStorage.getItem(reloadedKey)) {
+          sessionStorage.setItem(reloadedKey, 'true')
+          window.location.reload()
+        }
+      } else {
+        appendLine(tabId, '❌ WebContainer instance unavailable in this environment — shell commands cannot be executed.', 'error')
+      }
       return
     }
 
@@ -148,7 +223,8 @@ export function TerminalPanel({
     try {
       setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, isRunning: true } : t)))
 
-      const proc = await wc.spawn(command, args)
+      const { canonicalPath: spawnCwd } = normalizeWorkspacePath(tabCwd, '')
+      const proc = await wc.spawn(command, args, { cwd: spawnCwd || '.' })
       
       setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, process: proc } : t)))
 
@@ -166,6 +242,9 @@ export function TerminalPanel({
         prev.map((t) => (t.id === tabId ? { ...t, process: null, isRunning: false } : t))
       )
 
+      // Notify parent to re-sync filesystem tree when CLI commands touch/mkdir files
+      onFsChange?.()
+
       if (exitCode !== 0) {
         appendLine(tabId, `Process exited with code ${exitCode}`, 'warn')
       }
@@ -173,7 +252,7 @@ export function TerminalPanel({
       appendLine(tabId, `Failed to execute: ${err.message || err}`, 'error')
       setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, process: null, isRunning: false } : t)))
     }
-  }, [appendLine, currentDir])
+  }, [appendLine, tabs, onFsChange])
 
   // ── Auto-run npm install && npm run dev on project load/generation ────────
   useEffect(() => {
@@ -209,49 +288,145 @@ export function TerminalPanel({
     }
   }, [activeTab, appendLine])
 
-  // ── Handle Input Submission & Shortcuts (Up/Down/Ctrl+C/Ctrl+L) ───────────
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // ── PTY Terminal Resize Observer ──────────────────────────────────────────
+  useEffect(() => {
+    if (!containerRef.current) return
+    const el = containerRef.current
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect
+        const cols = Math.max(80, Math.floor(width / 8.5))
+        const rows = Math.max(24, Math.floor(height / 18))
+        if (activeTab?.process) {
+          try {
+            activeTab.process.resize({ cols, rows })
+          } catch {
+            // ignore if process exited
+          }
+        }
+      }
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [activeTab?.process])
+
+  // ── Handle Input Submission & Raw VT100 Keystrokes ───────────────────────
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.ctrlKey && e.key === 'c') {
-      e.preventDefault()
-      handleInterruptProcess()
-      return
-    }
+    const isRunning = activeTab && activeTab.isRunning && activeTab.process
 
-    if (e.ctrlKey && e.key === 'l') {
-      e.preventDefault()
-      setTabs((prev) => prev.map((t) => (t.id === activeTabId ? { ...t, lines: [] } : t)))
-      return
-    }
+    if (isRunning) {
+      const proc = activeTab.process!
+      const sendRawToStdin = (rawSeq: string) => {
+        try {
+          const writer = proc.input.getWriter()
+          writer.write(rawSeq)
+          writer.releaseLock()
+        } catch (err) {
+          console.warn('[Terminal] Stdin write error:', err)
+        }
+      }
 
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (history.length === 0) return
-      const nextIdx = historyIdx < history.length - 1 ? historyIdx + 1 : historyIdx
-      setHistoryIdx(nextIdx)
-      setInputVal(history[history.length - 1 - nextIdx] || '')
-      return
-    }
-
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (historyIdx <= 0) {
-        setHistoryIdx(-1)
-        setInputVal('')
+      if (e.ctrlKey && e.key === 'c') {
+        e.preventDefault()
+        sendRawToStdin('\x03')
+        handleInterruptProcess()
         return
       }
-      const nextIdx = historyIdx - 1
-      setHistoryIdx(nextIdx)
-      setInputVal(history[history.length - 1 - nextIdx] || '')
-      return
-    }
 
-    if (e.key === 'Enter') {
-      const cmd = inputVal.trim()
-      if (!cmd) return
-      setHistory((prev) => [...prev, cmd])
-      setHistoryIdx(-1)
-      setInputVal('')
-      runCommandInTab(activeTabId, cmd)
+      if (e.ctrlKey && e.key === 'd') {
+        e.preventDefault()
+        sendRawToStdin('\x04')
+        return
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        sendRawToStdin('\x1b[A')
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        sendRawToStdin('\x1b[B')
+        return
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        sendRawToStdin('\x1b[C')
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        sendRawToStdin('\x1b[D')
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        sendRawToStdin('\t')
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        sendRawToStdin('\x1b')
+        return
+      }
+      if (e.key === 'Backspace' && !inputVal) {
+        e.preventDefault()
+        sendRawToStdin('\x7f')
+        return
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        const textToSubmit = inputVal
+        setInputVal('')
+        appendLine(activeTabId, textToSubmit, 'log')
+        sendRawToStdin(textToSubmit + '\r')
+        return
+      }
+    } else {
+      if (e.ctrlKey && e.key === 'c') {
+        e.preventDefault()
+        handleInterruptProcess()
+        return
+      }
+
+      if (e.ctrlKey && e.key === 'l') {
+        e.preventDefault()
+        setTabs((prev) => prev.map((t) => (t.id === activeTabId ? { ...t, lines: [] } : t)))
+        return
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (history.length === 0) return
+        const nextIdx = historyIdx < history.length - 1 ? historyIdx + 1 : historyIdx
+        setHistoryIdx(nextIdx)
+        setInputVal(history[history.length - 1 - nextIdx] || '')
+        return
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (historyIdx <= 0) {
+          setHistoryIdx(-1)
+          setInputVal('')
+          return
+        }
+        const nextIdx = historyIdx - 1
+        setHistoryIdx(nextIdx)
+        setInputVal(history[history.length - 1 - nextIdx] || '')
+        return
+      }
+
+      if (e.key === 'Enter') {
+        const cmd = inputVal.trim()
+        setInputVal('')
+        if (!cmd) return
+        setHistory((prev) => [...prev, cmd])
+        setHistoryIdx(-1)
+        runCommandInTab(activeTabId, cmd)
+      }
     }
   }
 
@@ -266,6 +441,7 @@ export function TerminalPanel({
       lines: [{ id: 'init', type: 'info', message: `Shell tab #${nextNum} ready`, timestamp: new Date() }],
       process: null,
       isRunning: false,
+      cwd: '~',
     }
     setTabs((prev) => [...prev, newTab])
     setActiveTabId(newId)
@@ -288,7 +464,7 @@ export function TerminalPanel({
   const filteredLines = activeTab?.lines || []
 
   return (
-    <div className="flex flex-col h-full bg-[#282c34] text-[#abb2bf] font-mono select-none">
+    <div ref={containerRef} className="flex flex-col h-full bg-[#282c34] text-[#abb2bf] font-mono select-none">
       {/* Header Bar */}
       <div className="h-9 border-b border-[#181a1f] bg-[#21252b] flex items-center justify-between px-3 shrink-0 select-none">
         {/* Terminal Tabs */}
@@ -372,7 +548,7 @@ export function TerminalPanel({
 
         {/* Input prompt line */}
         <div className="flex items-center gap-2 pt-3 mt-3 border-t border-[#181a1f] shrink-0">
-          <span className="text-[#61afef] font-bold select-none">wisp:{currentDir}$</span>
+          <span className="text-[#61afef] font-bold select-none">wisp:{promptString}$</span>
           <input
             ref={inputRef}
             type="text"

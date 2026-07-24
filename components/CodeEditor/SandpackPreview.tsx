@@ -90,10 +90,13 @@ function SandpackStatusListener({
           : String(log.data)
 
         // Ignore browser extension / MetaMask noise that doesn't originate from app code
+        const lowerMsg = rawMsg.toLowerCase()
         if (
-          rawMsg.includes('chrome-extension://') ||
-          rawMsg.includes('MetaMask') ||
-          rawMsg.includes('inpage.js')
+          lowerMsg.includes('chrome-extension://') ||
+          lowerMsg.includes('metamask') ||
+          lowerMsg.includes('inpage.js') ||
+          lowerMsg.includes('failed to connect') ||
+          lowerMsg.includes('ethereum')
         ) {
           continue
         }

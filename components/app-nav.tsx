@@ -68,6 +68,12 @@ export function AppNav() {
               >
                 Pricing
               </a>
+              <Link
+                href="/skills"
+                className="text-xs font-semibold uppercase tracking-widest text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+              >
+                Skills
+              </Link>
               {isSignedIn && (
                 <Link
                   href="/dashboard"
@@ -80,6 +86,12 @@ export function AppNav() {
           ) : (
             // Non-landing pages (e.g. /dashboard)
             <>
+              <Link
+                href="/skills"
+                className="text-xs font-semibold uppercase tracking-widest text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+              >
+                Skills
+              </Link>
               {pathname === '/dashboard' && (
                 <Link
                   href="/workspace"

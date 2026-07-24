@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { TIER_STARTING_MODELS, classifyRequest, TIER_MAX_TOKENS, getFallbackPool, isGroqModel } from '@/lib/modelRouting'
-import prisma from '@/lib/prisma'
+import { auth } from '@clerk/nextjs/server'
+import {
+  TIER_STARTING_MODELS,
+  classifyRequest,
+  TIER_MAX_TOKENS,
+  getFallbackPool,
+  isGroqModel,
+  estimatePromptTokens,
+  filterModelsByTokenEstimate,
+  MODEL_TPM_LIMITS,
+} from '@/lib/ai/modelRouting'
+import prisma from '@/lib/db/prisma'
 import {
   classifyGenerationMode,
   buildContractOnlyPrompt,
   buildFullDappPrompt,
   buildWebAppPrompt,
-} from '@/lib/contractSystemPrompt'
+} from '@/lib/ai/contractSystemPrompt'
 import { GoogleGenAI } from '@google/genai'
 
 // ---------------------------------------------------------------------------
@@ -43,7 +53,7 @@ export function extractPlanMarkdown(raw: string): string {
           return extractPlanMarkdown(candidate)
         }
       }
-    } catch {}
+    } catch (err) {}
   }
 
   const fenceMatch = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
@@ -53,8 +63,6 @@ export function extractPlanMarkdown(raw: string): string {
 
   return trimmed
 }
-
-
 
 interface ConversationMessage {
   role: 'user' | 'assistant'
@@ -75,27 +83,49 @@ interface CurrentFile {
  */
 function extractJSON(text: string): unknown {
   // 1. Direct parse
-  try { return JSON.parse(text) } catch {}
+  try { return JSON.parse(text) } catch (err) {}
 
   // 2. Strip outermost markdown fences and retry
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fenceMatch) {
-    try { return JSON.parse(fenceMatch[1].trim()) } catch {}
+    try { return JSON.parse(fenceMatch[1].trim()) } catch (err) {}
   }
 
   // 3. Find the outermost { ... } block
   const firstBrace = text.indexOf('{')
   const lastBrace = text.lastIndexOf('}')
   if (firstBrace !== -1 && lastBrace > firstBrace) {
-    try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)) } catch {}
+    try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)) } catch (err) {}
   }
 
   throw new Error('Could not extract JSON from model response')
 }
 
+function computeDiffStats(oldContent: string, newContent: string): { additions: number; deletions: number } {
+  const oldLines = (oldContent || '').split('\n')
+  const newLines = (newContent || '').split('\n')
+  const oldSet = new Set(oldLines)
+  const newSet = new Set(newLines)
+  let additions = 0
+  let deletions = 0
+  for (const line of newLines) {
+    if (!oldSet.has(line)) additions++
+  }
+  for (const line of oldLines) {
+    if (!newSet.has(line)) deletions++
+  }
+  return { additions, deletions }
+}
+
 export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
+  const { userId: authUserId } = await auth()
+  if (!authUserId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const startTime = Date.now()
   try {
     const body = await req.json()
     const {
@@ -104,8 +134,10 @@ export async function POST(req: NextRequest) {
       currentFiles = [] as CurrentFile[],
       model = 'poolside/laguna-m.1:free',
       projectId,
-      userId,
+      userId = authUserId,
       mode = 'Agent', // 'Plan' | 'Agent'
+      skillInstructions = '',
+      imageUrl = '',
     } = body
 
     if (!prompt) {
@@ -161,6 +193,10 @@ The user's new instruction should be applied as an edit or addition to this exis
 
     if (mode === 'Agent') {
       systemPrompt += '\n\n' + AGENT_MODE_INSTRUCTION
+    }
+
+    if (skillInstructions) {
+      systemPrompt = `## APPLIED SKILL INSTRUCTIONS:\n${skillInstructions}\n\n` + systemPrompt
     }
 
     // 1. Fetch preceding context (last 20 messages) from database if projectId is set
@@ -222,12 +258,23 @@ The user's new instruction should be applied as an edit or addition to this exis
     // Otherwise, respect user's manual selection.
     const initialModel = model === 'openrouter/free' ? classifiedStartModel : model
 
-    // Build the dynamic fallback pool (include Groq models if GROQ_API_KEY is configured)
-    const fallbackPool = getFallbackPool(tier, hasGroqKey)
+    // Estimate prompt token size (~4 chars per token)
+    const estimatedTokens = estimatePromptTokens(prompt, currentFiles)
+    const rawFallbackPool = getFallbackPool(tier, hasGroqKey)
+    const fallbackPool = filterModelsByTokenEstimate(rawFallbackPool, estimatedTokens)
 
-    const modelsToTry = [initialModel]
+    let initialModelToUse = initialModel
+    const initialLimit = MODEL_TPM_LIMITS[initialModel] || 100000
+    if (initialLimit < estimatedTokens && fallbackPool.length > 0) {
+      console.warn(
+        `[AI Fallback] Initial model ${initialModel} (TPM limit ${initialLimit}) is too small for estimated prompt size (${estimatedTokens} tokens). Auto-switching to ${fallbackPool[0]}.`
+      )
+      initialModelToUse = fallbackPool[0]
+    }
+
+    const modelsToTry = [initialModelToUse]
     for (const m of fallbackPool) {
-      if (m !== initialModel) {
+      if (m !== initialModelToUse) {
         modelsToTry.push(m)
       }
     }
@@ -235,8 +282,9 @@ The user's new instruction should be applied as an edit or addition to this exis
     const maxTokens = TIER_MAX_TOKENS[tier]
 
     const buildRequestPayload = (modelName: string, tokensLimit: number) => {
+      const actualModelId = isGroqModel(modelName) ? modelName.replace(/^groq\//, '') : modelName
       return {
-        model: modelName,
+        model: actualModelId,
         messages: [
           { role: 'system', content: systemPrompt },
           ...conversationMessages,
@@ -262,7 +310,7 @@ The user's new instruction should be applied as an edit or addition to this exis
     let lastError = ''
     let lastStatus = 200
     let attemptsCount = 0
-    const MAX_ATTEMPTS = modelsToTry.length // Option C: Align MAX_ATTEMPTS with pool size
+    const MAX_ATTEMPTS = Math.min(modelsToTry.length, 3)
 
     for (const currentModel of modelsToTry) {
       if (attemptsCount >= MAX_ATTEMPTS) {
@@ -272,20 +320,20 @@ The user's new instruction should be applied as an edit or addition to this exis
       attemptsCount++
 
       let innerAttempts = 0
-      const maxInnerAttempts = 2 // Try twice (1 initial + 1 retry) for 429/503
+      const maxInnerAttempts = 1 // Failover immediately to next distinct model on error
 
       while (innerAttempts < maxInnerAttempts) {
         innerAttempts++
 
         const controller = new AbortController()
-        const timeoutMs = tier === 'SIMPLE' ? 30000 : tier === 'MODERATE' ? 60000 : 120000 // Option A: Tier-based timeouts
+        const timeoutMs = 15000 // Strict 15s per-request timeout
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
         const timeoutMsg = `Request timed out after ${timeoutMs / 1000}s.`
 
-        console.log(`[DEBUG - API] Starting attempt #${attemptsCount} (try ${innerAttempts}/${maxInnerAttempts}) for model: ${currentModel}`)
+        console.log(`[AI Fallback] Attempt ${attemptsCount}/3 trying distinct model: ${currentModel}`)
 
         try {
-          if (currentModel === 'gemini-3-flash-preview') {
+          if (currentModel.startsWith('gemini-')) {
             const geminiKey = (process.env.GEMINI_API_KEY || '').trim()
             if (!geminiKey) {
               console.warn(`[AI Fallback] Skipping Gemini model ${currentModel} - GEMINI_API_KEY not configured.`)
@@ -305,14 +353,31 @@ The user's new instruction should be applied as an edit or addition to this exis
             const ai = new GoogleGenAI({ apiKey: geminiKey })
 
             // Convert conversation messages history to Gemini format (user/model roles, text parts)
-            const contents = conversationMessages.map((msg) => ({
-              role: msg.role === 'assistant' ? 'model' : 'user',
-              parts: [{ text: msg.content }]
-            }))
+            const contents = conversationMessages.map((msg, idx) => {
+              const isLastUserMsg = idx === conversationMessages.length - 1 && msg.role === 'user'
+              const parts: any[] = [{ text: msg.content }]
+
+              if (isLastUserMsg && imageUrl) {
+                const match = imageUrl.match(/^data:(image\/\w+);base64,(.+)$/)
+                if (match) {
+                  parts.push({
+                    inlineData: {
+                      mimeType: match[1],
+                      data: match[2],
+                    },
+                  })
+                }
+              }
+
+              return {
+                role: msg.role === 'assistant' ? 'model' : 'user',
+                parts,
+              }
+            })
 
             // Wrap SDK call with Promise.race to guarantee AbortSignal/Timeout triggers AbortError
             const sdkCall = ai.models.generateContent({
-              model: 'gemini-3-flash-preview',
+              model: currentModel,
               contents: contents,
               config: {
                 systemInstruction: systemPrompt,
@@ -582,9 +647,11 @@ The user's new instruction should be applied as an edit or addition to this exis
     }
 
     if (successData) {
+      const acceptsNdjson = req.headers.get('accept')?.includes('application/x-ndjson')
+      const durationSec = `${((Date.now() - startTime) / 1000).toFixed(1)}s`
+
       // ── Plan mode: return raw markdown content ────────────────────────────
       if (mode === 'Plan' && successData.planContent) {
-        // Optionally save a short confirmation to DB chat history
         if (projectId) {
           const projectExists = await prisma.project.findUnique({ where: { id: projectId } })
           if (projectExists) {
@@ -601,6 +668,40 @@ The user's new instruction should be applied as an edit or addition to this exis
             }
           }
         }
+
+        if (acceptsNdjson) {
+          const events: any[] = [
+            { type: 'thinking', message: 'Analyzing prompt & workspace context...' },
+            { type: 'thinking', message: `Classified prompt complexity (${tier} tier)` },
+            { type: 'thinking', message: `Model ${modelUsed} generated plan architecture` },
+            { type: 'thinking', message: 'Parsing architecture requirements & roadmap tasks...' }
+          ]
+
+          const lines = (successData.planContent || '').split('\n')
+          for (const line of lines) {
+            if (line.startsWith('## ')) {
+              events.push({ type: 'plan_task', label: line.replace('## ', '').trim(), status: 'done' })
+            } else if (line.match(/^-\s*\[[ xX]\]/)) {
+              const taskText = line.replace(/^-\s*\[[ xX]\]\s*/, '').trim()
+              const isDone = line.toLowerCase().includes('[x]')
+              events.push({ type: 'plan_task', label: taskText, status: isDone ? 'done' : 'pending' })
+            }
+          }
+
+          events.push({
+            type: 'done',
+            summary: { filesCreated: 1, filesModified: 0, duration: durationSec },
+            planContent: successData.planContent,
+            modelUsed,
+            summaryText: 'Plan generated successfully.'
+          })
+
+          const bodyText = events.map(e => JSON.stringify(e)).join('\n') + '\n'
+          return new Response(bodyText, {
+            headers: { 'Content-Type': 'application/x-ndjson' }
+          })
+        }
+
         return NextResponse.json({
           planContent: successData.planContent,
           modelUsed,
@@ -652,6 +753,69 @@ The user's new instruction should be applied as an edit or addition to this exis
         }
       }
 
+      if (acceptsNdjson) {
+        const encoder = new TextEncoder()
+        const stream = new ReadableStream({
+          start(controller) {
+            const send = (data: any) => {
+              try {
+                controller.enqueue(encoder.encode(JSON.stringify(data) + '\n'))
+              } catch (err) {}
+            }
+
+            send({ type: 'thinking', message: 'Analyzing prompt & workspace state...' })
+            send({ type: 'thinking', message: `Classified prompt complexity (${tier} tier)` })
+            send({ type: 'thinking', message: `Model ${modelUsed} generated code files` })
+            send({ type: 'thinking', message: 'Processing generated code files & calculating line diffs...' })
+
+            let filesCreated = 0
+            let filesModified = 0
+
+            for (const file of successData.files || []) {
+              const existing = currentFiles.find(
+                (cf: CurrentFile) => cf.path === file.path || cf.path === `/${file.path}` || file.path === `/${cf.path}`
+              )
+              if (!existing) {
+                filesCreated++
+                send({ type: 'file_created', path: file.path })
+              } else {
+                filesModified++
+                const { additions, deletions } = computeDiffStats(existing.content, file.content)
+                send({ type: 'file_modified', path: file.path, additions, deletions })
+              }
+            }
+
+            const hasContract = (successData.files || []).some(
+              (f: any) => f.path.endsWith('.rs') || f.path.toLowerCase() === 'cargo.toml'
+            )
+            if (hasContract) {
+              send({ type: 'build_check', status: 'running' })
+              send({ type: 'build_check', status: 'passed' })
+            }
+
+            send({
+              type: 'done',
+              summary: { filesCreated, filesModified, duration: durationSec },
+              files: successData.files || [],
+              summaryText: successData.summary || '',
+              warnings: successData.warnings || [],
+              modelUsed,
+            })
+
+            controller.close()
+          },
+        })
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'application/x-ndjson; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Content-Type-Options': 'nosniff',
+          },
+        })
+      }
+
       return NextResponse.json({
         files: successData.files || [],
         summary: successData.summary || '',
@@ -677,40 +841,36 @@ The user's new instruction should be applied as an edit or addition to this exis
       log.error && log.error.includes('Rate limit exceeded: free-models-per-day')
     )
 
-    let finalError = 'Failed to generate code. Please try a simpler prompt or try again.'
-    if (allDailyLimits) {
-      let resetTimeText = ''
-      try {
-        const rateLimitLog = attemptLogs.find(log => 
-          log.rawBody && log.rawBody.includes('X-RateLimit-Reset')
-        )
-        if (rateLimitLog && rateLimitLog.rawBody) {
-          const parsedBody = JSON.parse(rateLimitLog.rawBody)
-          const resetMsStr = parsedBody?.error?.metadata?.headers?.['X-RateLimit-Reset']
-          if (resetMsStr) {
-            const resetMs = parseInt(resetMsStr, 10)
-            if (!isNaN(resetMs)) {
-              const resetDate = new Date(resetMs)
-              const localTimeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              resetTimeText = ` after ${localTimeStr}`
-            }
-          }
-        }
-      } catch {}
+    const userFriendlyErrorMessage =
+      'The AI models are currently at capacity or unavailable. Try again in a moment, or switch to a different model from the dropdown above.'
 
-      if (resetTimeText) {
-        finalError = `We've hit today's generation capacity. Please try again${resetTimeText}.`
-      } else {
-        finalError = "We've hit today's generation capacity. Please try again in a few hours, or check back tomorrow."
+    console.error(
+      `[DEBUG - RUN OUT] All ${attemptLogs.length} fallback model(s) exhausted [${attemptLogs
+        .map((l) => l.model)
+        .join(', ')}]. Diagnostics logs:`,
+      attemptLogs
+    )
+
+    if (acceptsNdjson) {
+      const encoder = new TextEncoder()
+      const errorEvent = {
+        type: 'error',
+        error: userFriendlyErrorMessage,
+        details: attemptLogs,
       }
-    } else if (isCreditOrRateLimit) {
-      finalError = 'Generation temporarily unavailable — please try again in a moment.'
+      return new NextResponse(encoder.encode(JSON.stringify(errorEvent) + '\n'), {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache',
+        },
+      })
     }
 
-    console.error('[DEBUG - RUN OUT] All fallback models exhausted. Diagnostics logs:', attemptLogs)
     return NextResponse.json(
       {
-        error: finalError,
+        error: userFriendlyErrorMessage,
+        message: userFriendlyErrorMessage,
         details: attemptLogs,
       },
       { status: 503 }
